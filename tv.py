@@ -97,6 +97,15 @@ class Channel:
     def display_name(self) -> str:
         return "CH {:02d}  {}".format(self.index + 1, self.name)
 
+    def epg_banner(self) -> str:
+        """
+        Plain text banner for MPV show-text.
+        Two lines separated by a literal newline character.
+        """
+        ch_label = "CH {:02d}".format(self.index + 1)
+        title = self.name.replace("_", " ").replace(".", " ")
+        return "● {}\n{}".format(ch_label, title)
+
 
 # ---------------------------------------------------------------------------
 # MPV controller
@@ -120,7 +129,14 @@ class MPVController:
             "--input-ipc-server={}".format(self.socket_path),
             "--input-conf={}".format(self.input_conf_path),
             "--osd-level=1",
-            "--osd-duration=2500",
+            "--osd-font-size=42",
+            "--osd-align-x=left",
+            "--osd-align-y=bottom",
+            "--osd-margin-x=40",
+            "--osd-margin-y=50",
+            "--osd-back-color=#AA000000",
+            "--osd-color=#FFFFFFFF",
+            "--osd-border-size=0",
         ]
         self._proc = subprocess.Popen(
             cmd,
@@ -150,7 +166,7 @@ class MPVController:
             time.sleep(0.45)
             self._send(["set_property", "pause", False])
             self._send(["seek", pos, "absolute"])
-            self._send(["show-text", channel.display_name(), 3000])
+            self._send(["show-text", channel.epg_banner(), 3500])
 
     def stop(self):
         if self._proc:
