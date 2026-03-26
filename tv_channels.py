@@ -31,10 +31,12 @@ import signal
 import argparse
 import tempfile
 import json
+import random
 import socket as _socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import List, Optional
+
 
 # ---------------------------------------------------------------------------
 # Video extensions MPV supports
@@ -54,6 +56,7 @@ def find_videos(root: str) -> List[Path]:
             if Path(fname).suffix.lower() in VIDEO_EXTENSIONS:
                 videos.append(Path(dirpath) / fname)
     videos.sort()
+    random.shuffle(videos)
     return videos
 
 
@@ -97,57 +100,21 @@ class Channel:
     def display_name(self) -> str:
         return "CH {:02d}  {}".format(self.index + 1, self.name)
 
-    def epg_banner(self) -> str:
-        """Write a .ass subtitle file and return its path.
-        BorderStyle 4 gives the solid filled-box retro cable-EPG look.
-        Timecodes 0->3.5 s make the banner auto-disappear.
-        """
-        ch_number = self.index + 1
+    def epg_info(self):
+        """Return (ch_label, title) for the EPG Lua overlay."""
+        ch_label = "CH {:02d}".format(self.index + 1)
         title = self.name.replace("_", " ").replace(".", " ")
-        label = "CH {:02d}   ·   Now Playing".format(ch_number)
-
-        lines = [
-            "[Script Info]",
-            "ScriptType: v4.00+",
-            "PlayResX: 1920",
-            "PlayResY: 1080",
-            "WrapStyle: 0",
-            "",
-            "[V4+ Styles]",
-            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour,"
-            " OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut,"
-            " ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow,"
-            " Alignment, MarginL, MarginR, MarginV, Encoding",
-            # BorderStyle 4 = solid filled box (BackColour) behind text
-            # Alignment 1 = bottom-left  |  BackColour &HCC0D1F35 = deep navy 80% opaque
-            "Style: Label,Arial,22,&H00DDEEFF,&H000000FF,&H00000000,"
-            "&HCC0D1F35,0,0,0,0,100,100,1,0,4,0,0,1,40,40,90,1",
-            "Style: Title,Arial,46,&H00FFFFFF,&H000000FF,&H00000000,"
-            "&HCC0D1F35,-1,0,0,0,100,100,0,0,4,0,0,1,40,40,40,1",
-            "",
-            "[Events]",
-            "Format: Layer, Start, End, Style, Name,"
-            " MarginL, MarginR, MarginV, Effect, Text",
-            "Dialogue: 0,0:00:00.00,0:00:03.50,Label,,0,0,0,,"
-            + "■  " + label,
-            "Dialogue: 0,0:00:00.00,0:00:03.50,Title,,0,0,0,,"
-            + title,
-        ]
-        ass = "\n".join(lines) + "\n"
-
-        fd, fpath = tempfile.mkstemp(suffix=".ass", prefix="mpv_epg_")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(ass)
-        return fpath
+        return ch_label, title
 
 
 # ---------------------------------------------------------------------------
 # MPV controller
 # ---------------------------------------------------------------------------
 class MPVController:
-    def __init__(self, socket_path: str, input_conf_path: str):
+    def __init__(self, socket_path: str, input_conf_path: str, lua_script_path: str):
         self.socket_path = socket_path
         self.input_conf_path = input_conf_path
+        self.lua_script_path = lua_script_path
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
 
@@ -162,6 +129,7 @@ class MPVController:
             "--no-terminal",
             "--input-ipc-server={}".format(self.socket_path),
             "--input-conf={}".format(self.input_conf_path),
+            "--script={}".format(self.lua_script_path),
             "--osd-level=1",
             "--osd-font-size=42",
             "--osd-align-x=left",
@@ -193,47 +161,16 @@ class MPVController:
         except Exception:
             pass
 
-    def _send_recv(self, command: list) -> dict:
-        """Send a command and return the parsed JSON response."""
-        payload = json.dumps({"command": command}) + "\n"
-        try:
-            with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
-                s.settimeout(3)
-                s.connect(self.socket_path)
-                s.sendall(payload.encode())
-                buf = b""
-                while b"\n" not in buf:
-                    chunk = s.recv(4096)
-                    if not chunk:
-                        break
-                    buf += chunk
-                return json.loads(buf.split(b"\n")[0].decode())
-        except Exception:
-            return {}
-
-    def _epg_worker(self, ass_path: str):
-        """Add EPG sub track, wait 3.5 s, remove it, delete temp file."""
-        resp = self._send_recv(["sub-add", ass_path, "select"])
-        data = resp.get("data", 1)
-        sid  = data if isinstance(data, int) else data.get("id", 1)
-        time.sleep(3.5)
-        self._send(["sub-remove", sid])
-        try:
-            os.remove(ass_path)
-        except OSError:
-            pass
-
     def load_channel(self, channel: Channel):
-        ass_path = channel.epg_banner()  # write temp .ass to /tmp
         pos = channel.current_position()
+        ch_label, title = channel.epg_info()
         with self._lock:
-            self._send(["loadfile", str(channel.path), "replace"])
-            # time.sleep(0.5)
+            self._send(["loadfile", str(channel.path), "replace", 0, f"start={pos}"])
+            time.sleep(0.09)
             self._send(["set_property", "pause", False])
             self._send(["seek", pos, "absolute"])
-        threading.Thread(
-            target=self._epg_worker, args=(ass_path,), daemon=True
-        ).start()
+            # Trigger the Lua EPG overlay via script-message
+            self._send(["script-message", "show-epg", ch_label, title])
 
     def stop(self):
         if self._proc:
@@ -294,10 +231,15 @@ class TVSimulator:
         self.control_port = self._free_port()
         self._input_conf = self._write_input_conf()
         self._socket_path = "/tmp/mpv_tv_{}.sock".format(os.getpid())
+        # Lua script lives next to this .py file
+        self._lua_script = str(
+            Path(__file__).parent / "tv_epg.lua"
+        )
 
         self.mpv = MPVController(
             socket_path=self._socket_path,
             input_conf_path=self._input_conf,
+            lua_script_path=self._lua_script,
         )
 
     # ------------------------------------------------------------------
