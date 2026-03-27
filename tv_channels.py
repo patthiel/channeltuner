@@ -47,14 +47,45 @@ VIDEO_EXTENSIONS = {
     ".3g2", ".f4v", ".asf", ".rm", ".rmvb", ".divx", ".xvid", ".hevc",
     ".h264", ".h265", ".avchd", ".mxf", ".dv", ".wtv", ".m2v",
 }
+# Not implemented yet. This will better support non-local file stores
+def get_smb_url(local_path: str) -> str:
+    """
+    Checks if a path is on an SMB mount and returns an smb:// URL.
+    Returns the original path string if it's a local disk.
+    """
+    abs_path = os.path.abspath(local_path)
+    
+    # Run the 'mount' command to see all active mounts on macOS
+    try:
+        output = subprocess.check_output(['mount']).decode('utf-8')
+        for line in output.splitlines():
+            # Example line: //user@server/share on /Volumes/share (smbfs, nodev, nosuid, mounted by user)
+            if ' (smbfs' in line:
+                parts = line.split(' on ')
+                mount_source = parts[0].strip()
+                mount_point = parts[1].split(' (')[0].strip()
+                
+                if abs_path.startswith(mount_point):
+                    # Replace the local mount point with the SMB source
+                    relative_path = abs_path[len(mount_point):].lstrip('/')
+                    # Ensure the source starts with smb:
+                    smb_source = mount_source.replace('//', 'smb://', 1)
+                    return f"{smb_source}/{relative_path}"
+    except Exception:
+        pass
+    
+    return abs_path
 
 
 def find_videos(root: str) -> List[Path]:
     videos = []
-    for dirpath, _, filenames in os.walk(root):
+    for dirpath, _, filenames in os.walk(root, followlinks=True):
         for fname in filenames:
             if Path(fname).suffix.lower() in VIDEO_EXTENSIONS:
-                videos.append(Path(dirpath) / fname)
+                # full_path = str(Path(dirpath) / fname)
+                if not fname.startswith("._"):
+                    videos.append(Path(dirpath) / fname)
+    # breakpoint()
     videos.sort()
     random.shuffle(videos)
     return videos
@@ -139,6 +170,15 @@ class MPVController:
             "--osd-back-color=#AA000000",
             "--osd-color=#FFFFFFFF",
             "--osd-border-size=0",
+            "--cache-secs=10",
+            "--demuxer-max-bytes=50M",
+            "--demuxer-readahead-secs=10",
+            "--stream-lavf-o=fflags=nobuffer",
+            "--stream-buffer-size=6M",
+            "--demuxer-seekable-cache=no",
+            "--hr-seek=no",
+            "--hr-seek-demuxer-offset=0"
+
         ]
         self._proc = subprocess.Popen(
             cmd,
@@ -165,10 +205,7 @@ class MPVController:
         pos = channel.current_position()
         ch_label, title = channel.epg_info()
         with self._lock:
-            self._send(["loadfile", str(channel.path), "replace", 0, f"start={pos}"])
-            time.sleep(0.09)
-            self._send(["set_property", "pause", False])
-            self._send(["seek", pos, "absolute"])
+            self._send(["loadfile", str(channel.path), "replace", 0, f"start={pos},exact=no"])
             # Trigger the Lua EPG overlay via script-message
             self._send(["script-message", "show-epg", ch_label, title])
 
@@ -275,7 +312,7 @@ class TVSimulator:
         self.previous_index = self.current_index
         self.current_index = index
         ch = self.channels[self.current_index]
-        print("\r  \u25b6  {:<60}".format(ch.display_name()), end="", flush=True)
+        print("\r  \u25b6  {:<60}".format(ch.display_name()), end=None, flush=True)
         # Run in a thread so the HTTP handler returns immediately
         threading.Thread(target=self.mpv.load_channel, args=(ch,), daemon=True).start()
 

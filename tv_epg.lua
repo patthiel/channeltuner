@@ -35,7 +35,8 @@ local function draw_epg(ch_label, title)
     -- Tell the overlay what canvas size we're drawing for
     ov.res_x = W
     ov.res_y = H
-
+    
+    --- We had some pretty EPG that we've decided to comment out because it wasn't behaving..
     -- -- Background filled rectangle
     -- ass:new_event()
     -- ass:pos(0, 0)
