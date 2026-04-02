@@ -74,6 +74,95 @@ def get_video_duration(path: Path) -> Optional[float]:
         return None
 
 
+
+# ---------------------------------------------------------------------------
+# YouTube support — requires yt-dlp on PATH and MPV built with yt-dlp support
+# ---------------------------------------------------------------------------
+def fetch_youtube_videos(channel_url: str, max_videos: int = 20) -> list:
+    """
+    Use yt-dlp --flat-playlist to list videos from a YouTube channel URL.
+    Returns a list of dicts with keys: url, title, duration.
+    No downloading — metadata only.
+    """
+    print("  Fetching YouTube channel: {}".format(channel_url))
+    try:
+        result = subprocess.run(
+            [
+                "yt-dlp",
+                "--flat-playlist",
+                "--dump-json",
+                "--playlist-end", str(max_videos),
+                "--no-warnings",
+                channel_url,
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+        videos = []
+        for line in result.stdout.strip().splitlines():
+            try:
+                data = json.loads(line)
+                url      = data.get("url") or data.get("webpage_url")
+                title    = data.get("title", "Unknown")
+                duration = float(data.get("duration") or 1800)
+                if url:
+                    # Ensure we have a full watch URL
+                    if not url.startswith("http"):
+                        url = "https://www.youtube.com/watch?v=" + url
+                    videos.append({"url": url, "title": title, "duration": duration})
+            except Exception:
+                continue
+        print("    {} videos found".format(len(videos)))
+        return videos
+    except FileNotFoundError:
+        print("  WARNING: yt-dlp not found — skipping YouTube source")
+        return []
+    except Exception as e:
+        print("  WARNING: Could not fetch YouTube channel: {}".format(e))
+        return []
+
+
+def resolve_youtube_url(watch_url: str) -> Optional[dict]:
+    """
+    Resolve a YouTube watch URL to direct HLS stream URLs via yt-dlp.
+
+    YouTube serves video and audio as separate HLS streams. We resolve both
+    and return them as a dict so MPV can load video as the main file and
+    add audio via audio-add. Both streams are HLS DVR so seeking works.
+
+    Returns {"video": url, "audio": url_or_none} or None on failure.
+
+    URLs expire after ~6 hours so callers should refresh periodically.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "yt-dlp",
+                "-f", "bestvideo+bestaudio/best",
+                "--get-url",
+                "--no-warnings",
+                watch_url,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        lines = [
+            l.strip() for l in result.stdout.strip().splitlines()
+            if l.strip().startswith("http")
+        ]
+        if len(lines) >= 2:
+            return {"video": lines[0], "audio": lines[1]}
+        elif len(lines) == 1:
+            return {"video": lines[0], "audio": None}
+        return None
+    except Exception:
+        return None
+
+
+def load_config(config_path: str) -> dict:
+    """Load and validate a JSON channel config file."""
+    with open(config_path) as f:
+        return json.load(f)
+
+
 # ---------------------------------------------------------------------------
 # Channel
 # ---------------------------------------------------------------------------
@@ -118,6 +207,59 @@ class Channel:
         ch_label = "CH {:02d}".format(self.index + 1)
         title = self.name.replace("_", " ").replace(".", " ")
         return ch_label, title
+
+
+# How long resolved YouTube stream URLs stay valid before needing a refresh.
+# YouTube HLS URLs typically expire after ~6 hours; we refresh at 5 to be safe.
+YOUTUBE_URL_TTL = 5 * 60 * 60   # 5 hours in seconds
+
+
+class YouTubeChannel(Channel):
+    """
+    A channel backed by a YouTube video streamed via yt-dlp.
+
+    Stream URLs are resolved in a background thread at startup and refreshed
+    automatically before they expire. When the resolved URL is ready, MPV
+    loads the video HLS stream directly and attaches the audio HLS stream
+    as a separate track via audio-add — this gives full seeking support
+    since both streams are served as HLS DVR playlists.
+    """
+    def __init__(self, index: int, url: str, title: str, duration: float):
+        # Use a sanitised title as a fake Path so display_name/epg_info work.
+        safe_title = title.replace("/", "-").replace("\\", "-")
+        super().__init__(index, Path(safe_title))
+        self.url = url                    # YouTube watch URL
+        self.duration = duration          # from yt-dlp metadata
+        self.resolved_url: Optional[dict] = None   # {"video": ..., "audio": ...}
+        self._resolve_lock = threading.Lock()
+        self._resolved_at: Optional[float] = None  # time.time() when resolved
+
+    def _ensure_duration(self) -> float:
+        return self.duration
+
+    def epg_info(self):
+        ch_label = "CH {:02d}".format(self.index + 1)
+        title = self.name.replace("_", " ").replace(".", " ").replace("-", " ")
+        return ch_label, title
+
+    def is_url_fresh(self) -> bool:
+        """Return True if the resolved URL is present and not yet expired."""
+        if self.resolved_url is None or self._resolved_at is None:
+            return False
+        return (time.time() - self._resolved_at) < YOUTUBE_URL_TTL
+
+    def resolve(self):
+        """Resolve (or refresh) the stream URL in the calling thread.
+        Safe to call from multiple threads — uses a lock to prevent races."""
+        with self._resolve_lock:
+            resolved = resolve_youtube_url(self.url)
+            if resolved:
+                self.resolved_url = resolved
+                self._resolved_at = time.time()
+                print("  [YT] resolved: {}".format(self.name[:50]), flush=True)
+            else:
+                print("  [YT] WARNING: could not resolve: {}".format(self.url),
+                      flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -235,8 +377,32 @@ class MPVController:
         ch_label, title = channel.epg_info()
         with self._lock:
             pos = channel.current_position()     # compute BEFORE loadfile
-            self._send(["loadfile", str(channel.path), "replace", 0,
-                        "start={},pause=yes".format(pos)])
+
+            if isinstance(channel, YouTubeChannel):
+                if channel.is_url_fresh():
+                    # Resolved HLS URLs ready — load video stream directly
+                    # and attach the audio stream via audio-add for full seeking.
+                    video_url = channel.resolved_url["video"]
+                    audio_url = channel.resolved_url.get("audio")
+                    self._send(["loadfile", video_url, "replace", 0,
+                                "start={},pause=yes".format(pos)])
+                    # Poll until MPV has the video stream open
+                    for _ in range(60):
+                        result = self._send(["get_property", "playback-time"])
+                        if result is not None:
+                            break
+                        time.sleep(0.05)
+                    if audio_url:
+                        self._send(["audio-add", audio_url, "select"])
+                else:
+                    # URL not yet resolved — fall back to watch URL (no seeking).
+                    # A refresh will happen in the background.
+                    print("  [YT] stream URL not ready, loading watch URL: {}".format(
+                        channel.name[:40]), flush=True)
+                    self._send(["loadfile", channel.url, "replace"])
+            else:
+                self._send(["loadfile", str(channel.path), "replace", 0,
+                            "start={},pause=yes".format(pos)])
             
             # # Poll until MPV has opened the file and is paused at the right position
             for _ in range(40):
@@ -309,13 +475,71 @@ def _make_handler(tv_ref):
 # TV simulator
 # ---------------------------------------------------------------------------
 class TVSimulator:
-    def __init__(self, video_dir: str):
-        videos = find_videos(video_dir)
-        if not videos:
-            print("No video files found under: {}".format(video_dir))
+    def __init__(self, video_dir: Optional[str] = None, config_path: Optional[str] = None):
+        all_paths: List[Path] = []
+        youtube_entries: list = []
+
+        # ── Load from config file if provided ────────────────────────────
+        if config_path:
+            try:
+                cfg = load_config(config_path)
+            except Exception as e:
+                print("Error loading config: {}".format(e))
+                sys.exit(1)
+
+            for source in cfg.get("sources", []):
+                src_type = source.get("type")
+                if src_type == "local":
+                    path = source.get("path", "")
+                    if os.path.isdir(path):
+                        all_paths.extend(find_videos(path))
+                    else:
+                        print("WARNING: local path not found: {}".format(path))
+                elif src_type == "youtube":
+                    url      = source.get("url", "")
+                    max_vids = source.get("max_videos", 20)
+                    if url:
+                        youtube_entries.extend(fetch_youtube_videos(url, max_vids))
+                else:
+                    print("WARNING: unknown source type: {}".format(src_type))
+
+        # ── Load from directory argument if provided ──────────────────────
+        if video_dir:
+            all_paths.extend(find_videos(video_dir))
+
+        if not all_paths and not youtube_entries:
+            print("No video sources found. Provide a directory or a config file.")
             sys.exit(1)
 
-        self.channels: List[Channel] = [Channel(i, p) for i, p in enumerate(videos)]
+        # ── Build channel list: local first, then YouTube, then shuffle ───
+        random.shuffle(all_paths)
+        channels: List[Channel] = []
+        for path in all_paths:
+            channels.append(Channel(len(channels), path))
+        for entry in youtube_entries:
+            channels.append(YouTubeChannel(
+                index    = len(channels),
+                url      = entry["url"],
+                title    = entry["title"],
+                duration = entry["duration"],
+            ))
+        random.shuffle(channels)
+        # Re-index after shuffle so channel numbers are sequential
+        for i, ch in enumerate(channels):
+            ch.index = i
+
+        self.channels: List[Channel] = channels
+
+        # Kick off background resolution for all YouTube channels.
+        # Each channel gets its own thread so they resolve concurrently.
+        yt_channels = [ch for ch in self.channels if isinstance(ch, YouTubeChannel)]
+        if yt_channels:
+            print("  Resolving {} YouTube stream URL(s) in background...".format(
+                len(yt_channels)))
+            for yt_ch in yt_channels:
+                threading.Thread(
+                    target=yt_ch.resolve, daemon=True
+                ).start()
         self.current_index: int = 0
         self.previous_index: Optional[int] = None
         self._quit = threading.Event()
@@ -423,11 +647,23 @@ class TVSimulator:
         print("  Q/ESC \u2192 quit")
         print("=" * 60 + "\n")
 
-        # Pre-fetch durations in background
+        # Pre-fetch durations for local channels in background
         def prefetch():
             for ch in self.channels:
-                ch._ensure_duration()
+                if not isinstance(ch, YouTubeChannel):
+                    ch._ensure_duration()
         threading.Thread(target=prefetch, daemon=True).start()
+
+        # Periodically refresh YouTube stream URLs before they expire
+        def refresh_youtube_urls():
+            while not self._quit.is_set():
+                self._quit.wait(timeout=300)   # check every 5 minutes
+                for ch in self.channels:
+                    if isinstance(ch, YouTubeChannel) and not ch.is_url_fresh():
+                        threading.Thread(
+                            target=ch.resolve, daemon=True
+                        ).start()
+        threading.Thread(target=refresh_youtube_urls, daemon=True).start()
 
         self._start_http_server()
         self.mpv.start()
@@ -465,16 +701,29 @@ def main():
     parser.add_argument(
         "directory",
         nargs="?",
-        default=".",
-        help="Root directory to scan recursively for video files (default: current dir)",
+        default=None,
+        help="Root directory to scan recursively for video files.",
+    )
+    parser.add_argument(
+        "--config", "-c",
+        default=None,
+        metavar="FILE",
+        help="JSON config file defining local and YouTube channel sources.",
     )
     args = parser.parse_args()
 
-    if not os.path.isdir(args.directory):
+    if args.directory is None and args.config is None:
+        parser.error("Provide a directory, a --config file, or both.")
+
+    if args.directory is not None and not os.path.isdir(args.directory):
         print("Error: '{}' is not a directory.".format(args.directory))
         sys.exit(1)
 
-    TVSimulator(args.directory).run()
+    if args.config is not None and not os.path.isfile(args.config):
+        print("Error: config file not found: {}".format(args.config))
+        sys.exit(1)
+
+    TVSimulator(video_dir=args.directory, config_path=args.config).run()
 
 
 if __name__ == "__main__":
