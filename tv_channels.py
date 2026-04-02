@@ -31,7 +31,6 @@ import signal
 import argparse
 import tempfile
 import json
-import random
 import socket as _socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -47,35 +46,6 @@ VIDEO_EXTENSIONS = {
     ".3g2", ".f4v", ".asf", ".rm", ".rmvb", ".divx", ".xvid", ".hevc",
     ".h264", ".h265", ".avchd", ".mxf", ".dv", ".wtv", ".m2v",
 }
-# Not implemented yet. This will better support non-local file stores
-def get_smb_url(local_path: str) -> str:
-    """
-    Checks if a path is on an SMB mount and returns an smb:// URL.
-    Returns the original path string if it's a local disk.
-    """
-    abs_path = os.path.abspath(local_path)
-    
-    # Run the 'mount' command to see all active mounts on macOS
-    try:
-        output = subprocess.check_output(['mount']).decode('utf-8')
-        for line in output.splitlines():
-            # Example line: //user@server/share on /Volumes/share (smbfs, nodev, nosuid, mounted by user)
-            if ' (smbfs' in line:
-                parts = line.split(' on ')
-                mount_source = parts[0].strip()
-                mount_point = parts[1].split(' (')[0].strip()
-                
-                if abs_path.startswith(mount_point):
-                    # Replace the local mount point with the SMB source
-                    relative_path = abs_path[len(mount_point):].lstrip('/')
-                    # Ensure the source starts with smb:
-                    smb_source = mount_source.replace('//', 'smb://', 1)
-                    return f"{smb_source}/{relative_path}"
-    except Exception:
-        pass
-    
-    return abs_path
-
 
 def find_videos(root: str) -> List[Path]:
     videos = []
@@ -83,9 +53,8 @@ def find_videos(root: str) -> List[Path]:
         for fname in filenames:
             if Path(fname).suffix.lower() in VIDEO_EXTENSIONS:
                 # full_path = str(Path(dirpath) / fname)
-                if not fname.startswith("._"):
+                if not fname.startswith("._") and not "sample" in fname:
                     videos.append(Path(dirpath) / fname)
-    # breakpoint()
     videos.sort()
     random.shuffle(videos)
     return videos
@@ -115,6 +84,8 @@ class Channel:
         self.name = path.stem
         self.duration: Optional[float] = None
         self._wall_start: Optional[float] = None
+        self.previous_position = None
+        self.time_of_departure = None
 
     def _ensure_duration(self) -> float:
         if self.duration is None:
@@ -123,12 +94,23 @@ class Channel:
 
     def current_position(self) -> float:
         dur = self._ensure_duration()
-        if self._wall_start is None:
+
+        if self.previous_position is not None:
+            # Returning to this channel — advance by time spent away
+            elapsed_since_departure = time.time() - self.time_of_departure
+            adjusted = (self.previous_position + elapsed_since_departure) % dur
+            self._wall_start = time.time() - adjusted
+            self.previous_position = None
+            self.time_of_departure = None
+        elif self._wall_start is None:
+            # First ever visit — pick a random starting point
             offset = random.uniform(0, dur)
             self._wall_start = time.time() - offset
+
         return (time.time() - self._wall_start) % dur
 
-    def display_name(self) -> str:
+
+    def display_name(self) -> str:        
         return "CH {:02d}  {}".format(self.index + 1, self.name)
 
     def epg_info(self):
@@ -171,14 +153,21 @@ class MPVController:
             "--osd-color=#FFFFFFFF",
             "--osd-border-size=0",
             "--cache-secs=10",
-            "--demuxer-max-bytes=50M",
+            "--cache=yes",
+            "--cache-pause=no",
+            "--force-window=yes",
+            "--hwdec=auto-safe",
+            "--demuxer-max-bytes=250M",
             "--demuxer-readahead-secs=10",
-            "--stream-lavf-o=fflags=nobuffer",
-            "--stream-buffer-size=6M",
+            # "--stream-lavf-o=fflags=nobuffer", # Disable for NFS
+            "--stream-buffer-size=512K",
+            "--vd-lavc-threads=5",
             "--demuxer-seekable-cache=no",
             "--hr-seek=no",
-            "--hr-seek-demuxer-offset=0"
-
+            "--hr-seek-demuxer-offset=0",
+            "--vd-lavc-fast=yes",
+            "--opengl-pbo=yes",
+            "--metadata-codepage=utf-8"
         ]
         self._proc = subprocess.Popen(
             cmd,
@@ -191,6 +180,23 @@ class MPVController:
                 break
             time.sleep(0.1)
 
+    # def _send(self, command: list):
+    #     payload = json.dumps({"command": command}) + "\n"
+    #     try:
+    #         with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
+    #             s.settimeout(2)
+    #             s.connect(self.socket_path)
+    #             s.sendall(payload.encode())
+                
+    #             # Read the response from MPV
+    #             response = s.recv(4096).decode()
+    #             data = json.loads(response)
+            
+    #             # MPV returns {"data": <value>, "error": "success"}
+    #             return data.get("data")
+    #     except Exception:
+    #         pass
+
     def _send(self, command: list):
         payload = json.dumps({"command": command}) + "\n"
         try:
@@ -198,15 +204,48 @@ class MPVController:
                 s.settimeout(2)
                 s.connect(self.socket_path)
                 s.sendall(payload.encode())
+                
+                buf = b""
+                while True:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    # Process all newline-delimited JSON objects in the buffer
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line.decode())
+                            # Skip unsolicited event messages, only return command responses
+                            if "error" in data:
+                                return data.get("data")
+                        except json.JSONDecodeError:
+                            continue
+                    # If we got a response already, stop reading
+                    if not buf and chunk:
+                        break
         except Exception:
-            pass
+            print('Error sending to MPV')
+            # pass
+
 
     def load_channel(self, channel: Channel):
-        pos = channel.current_position()
         ch_label, title = channel.epg_info()
         with self._lock:
-            self._send(["loadfile", str(channel.path), "replace", 0, f"start={pos},exact=no"])
-            # Trigger the Lua EPG overlay via script-message
+            pos = channel.current_position()     # compute BEFORE loadfile
+            self._send(["loadfile", str(channel.path), "replace", 0,
+                        "start={},pause=yes".format(pos)])
+            
+            # # Poll until MPV has opened the file and is paused at the right position
+            for _ in range(40):
+                result = self._send(["get_property", "playback-time"])
+                if result is not None:
+                    break
+                time.sleep(0.05)
+            
+            self._send(["set_property", "pause", False])
             self._send(["script-message", "show-epg", ch_label, title])
 
     def stop(self):
@@ -224,6 +263,18 @@ class MPVController:
                 os.remove(p)
             except OSError:
                 pass
+    
+    # Get the video's current position from MPV
+    def get_pos_from_mpv(self):
+        result = self._send(["get_property", "time-pos"])
+        if result is None:
+            raise RuntimeError("MPV did not return playback position")
+        return float(result)
+    
+    def display_epg(self, channel: Channel):
+        ch_label, title = channel.epg_info()
+        self._send(["script-message", "show-epg", ch_label, title])
+
 
 
 # ---------------------------------------------------------------------------
@@ -239,8 +290,12 @@ def _make_handler(tv_ref):
                 tv_ref._tune_prev()
             elif cmd == "back":
                 tv_ref._tune_back()
+            elif cmd == "unpause":
+                tv_ref._show_epg()
+            elif cmd == "path":
+                tv_ref._current_video_path()
             elif cmd == "quit":
-                tv_ref._quit.set()
+                tv_ref._quit.set()  
             self.send_response(204)
             self.end_headers()
 
@@ -298,6 +353,8 @@ class TVSimulator:
             "B      run curl -sf http://127.0.0.1:{}/back\n".format(p),
             "q      run curl -sf http://127.0.0.1:{}/quit\n".format(p),
             "ESC    run curl -sf http://127.0.0.1:{}/quit\n".format(p),
+            "\\      run curl -sf http://127.0.0.1:{}/path\n".format(p),
+            "SPACE  cycle pause ; run curl -sf http://127.0.0.1:{}/unpause\n".format(p)
         ]
         fd, path = tempfile.mkstemp(suffix=".conf", prefix="mpv_tv_input_")
         with os.fdopen(fd, "w") as f:
@@ -309,11 +366,18 @@ class TVSimulator:
         index = index % len(self.channels)
         if index == self.current_index:
             return
+        # Save MPV's current position onto the channel we're LEAVING
+        try:
+            departing = self.channels[self.current_index]
+            departing.previous_position = self.mpv.get_pos_from_mpv()
+            departing.time_of_departure = time.time()   # ← record when we left
+        except Exception as e:
+            print(e)
+            # pass
         self.previous_index = self.current_index
         self.current_index = index
         ch = self.channels[self.current_index]
         print("\r  \u25b6  {:<60}".format(ch.display_name()), end=None, flush=True)
-        # Run in a thread so the HTTP handler returns immediately
         threading.Thread(target=self.mpv.load_channel, args=(ch,), daemon=True).start()
 
     def _tune_next(self):
@@ -325,6 +389,19 @@ class TVSimulator:
     def _tune_back(self):
         if self.previous_index is not None:
             self._tune(self.previous_index)
+
+    def _show_epg(self):
+        try:
+            is_paused = self.mpv._send(["get_property", "pause"])
+            
+            if not is_paused:
+                ch = self.channels[self.current_index]
+                self.mpv.display_epg(ch)
+        except Exception:
+            pass
+    def _current_video_path(self):
+        ch = self.channels[self.current_index]
+        print("\n  \U0001f4c2  {}".format(ch.path), flush=True)
 
     # ------------------------------------------------------------------
     def _start_http_server(self):
