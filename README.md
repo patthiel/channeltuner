@@ -15,10 +15,10 @@ Every video in the sources gets turned into a channel which, when tuned to, will
 
 ```bash
 # Use homebrew to install mpv on the system
-$ brew install mpv
+$ brew install mpv ffmpeg
 
 # install python dependencies 
-$ pip install mpv yt-dlp 
+$ pip install mpv yt-dlp
 ```
 
 
