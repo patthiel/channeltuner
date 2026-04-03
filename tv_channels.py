@@ -257,9 +257,10 @@ class YouTubeChannel(Channel):
                 self.resolved_url = resolved
                 self._resolved_at = time.time()
                 print("  [YT] resolved: {}".format(self.name[:50]), flush=True)
-            else:
-                print("  [YT] WARNING: could not resolve: {}".format(self.url),
+            else:                 
+                print("  [YT] FAIL: could not resolve, skipping: {}".format(self.url),
                       flush=True)
+                
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +372,6 @@ class MPVController:
         except Exception:
             print('Error sending to MPV')
             # pass
-
 
     def load_channel(self, channel: Channel):
         ch_label, title = channel.epg_info()
@@ -540,6 +540,8 @@ class TVSimulator:
                 threading.Thread(
                     target=yt_ch.resolve, daemon=True
                 ).start()
+
+
         self.current_index: int = 0
         self.previous_index: Optional[int] = None
         self._quit = threading.Event()
@@ -605,10 +607,26 @@ class TVSimulator:
         threading.Thread(target=self.mpv.load_channel, args=(ch,), daemon=True).start()
 
     def _tune_next(self):
-        self._tune(self.current_index + 1)
+        tune_next_amnt = 1
+        potential_next_index = self.current_index + 1
+        potential_next_channel = self.channels[potential_next_index]
+        ch = self.channels[self.current_index]
+        if  isinstance(potential_next_channel, YouTubeChannel) and not potential_next_channel.is_url_fresh():
+            # Skipping this channel since its not resolved
+            print('missing resolved url, skipping')
+            tune_next_amnt += tune_next_amnt
+        self._tune(self.current_index + tune_next_amnt)
 
     def _tune_prev(self):
-        self._tune(self.current_index - 1)
+        tune_prev_amnt = 1
+        ch = self.channels[self.current_index]
+        potential_prev_index = self.current_index - 1
+        potential_prev_channel = self.channels[potential_prev_index]
+        if  isinstance(potential_prev_channel, YouTubeChannel) and not potential_prev_channel.is_url_fresh():
+            print('missing resolved url, skipping')
+            # Skipping this channel since its not resolved
+            tune_prev_amnt += tune_prev_amnt
+        self._tune(self.current_index - tune_prev_amnt)
 
     def _tune_back(self):
         if self.previous_index is not None:

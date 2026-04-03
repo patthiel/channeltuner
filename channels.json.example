@@ -1,0 +1,25 @@
+{
+"sources": [
+    {
+      "type": "local", 
+      "path": "/path/to/videos",
+      "max_videos": 30
+    },
+    {
+      "type": "youtube",
+      "url": "https://www.youtube.com/@jameshoffmann/videos",
+      "max_videos": 30
+    },
+    {
+      "type": "youtube",
+      "url": "https://www.youtube.com/@nevertoosmall/videos",
+      "max_videos": 30
+    },
+    {
+      "type": "youtube",
+      "url": "https://www.youtube.com/@meanorangecat/videos",
+      "max_videos" : 30
+    }
+  ]
+}
+
