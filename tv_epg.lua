@@ -17,6 +17,10 @@ local COL_DOT   = "AAAAAA"
 local COL_NOW   = "CCCCCC"
 local COL_WHITE = "FFFFFF"
 
+local last_ch_label = nil
+local last_title    = nil
+local mouse_timer   = nil
+
 local function draw_epg(ch_label, title)
     -- Read the actual OSD canvas size at draw time so the box always
     -- covers full width regardless of window size or video aspect ratio.
@@ -95,4 +99,37 @@ end)
 
 mp.register_script_message("hide-epg", function()
     hide_epg()
+end)
+
+
+mp.register_script_message("cache-epg-info", function(ch_label, title)
+    last_ch_label = ch_label
+    last_title    = title
+end)
+
+mp.observe_property("mouse-pos", "native", function(_, pos)
+    -- pos is nil when cursor leaves the window
+    if not pos then return end
+    if not last_ch_label or not last_title then return end
+
+    if mouse_timer then
+        mouse_timer:kill()
+        mouse_timer = nil
+    end
+
+    -- If EPG already showing from a channel change, just extend its timer
+    if epg_timer then
+        epg_timer:kill()
+        epg_timer = mp.add_timeout(3.5, function()
+            ov:remove()
+            epg_timer = nil
+        end)
+        return
+    end
+
+    draw_epg(last_ch_label, last_title)
+    mouse_timer = mp.add_timeout(3.5, function()
+        ov:remove()
+        mouse_timer = nil
+    end)
 end)

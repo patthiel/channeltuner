@@ -33,6 +33,7 @@ import tempfile
 import json
 import socket as _socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import List, Optional
 
@@ -119,13 +120,70 @@ def fetch_youtube_videos(channel_url: str, max_videos: int = 20) -> list:
     except Exception as e:
         print("  WARNING: Could not fetch YouTube channel: {}".format(e))
         return []
+    
+def _fetch_sources_concurrent(sources: list) -> tuple:
+    """
+    Fetch all sources concurrently. Local directories are fast and run
+    immediately. YouTube fetches are throttled to max 3 concurrent requests
+    with a small random delay between each to avoid rate limiting.
+    """
+    all_paths = []
+    youtube_entries = []
+    lock = threading.Lock()
 
+    # Semaphore limits how many yt-dlp processes run simultaneously
+    yt_semaphore = threading.Semaphore(3)
+
+    def fetch_local(source):
+        path = source.get("path", "")
+        if os.path.isdir(path):
+            videos = find_videos(path)
+            with lock:
+                all_paths.extend(videos)
+        else:
+            print("WARNING: local path not found: {}".format(path))
+
+    def fetch_youtube(source):
+        url      = source.get("url", "")
+        max_vids = source.get("max_videos", 20)
+        if not url:
+            return
+        # Random delay 0.5-2s between requests to avoid rate limiting
+        time.sleep(random.uniform(0.5, 2.0))
+        with yt_semaphore:
+            entries = fetch_youtube_videos(url, max_vids)
+            with lock:
+                youtube_entries.extend(entries)
+
+    local_sources   = [s for s in sources if s.get("type") == "local"]
+    youtube_sources = [s for s in sources if s.get("type") == "youtube"]
+    unknown_sources = [s for s in sources
+                       if s.get("type") not in ("local", "youtube")]
+
+    for s in unknown_sources:
+        print("WARNING: unknown source type: {}".format(s.get("type")))
+
+    # Local fetches are fast — run them all in parallel with no throttle
+    # YouTube fetches run concurrently but throttled by the semaphore
+    all_fetchers = (
+        [(fetch_local, s) for s in local_sources] +
+        [(fetch_youtube, s) for s in youtube_sources]
+    )
+
+    with ThreadPoolExecutor(
+        max_workers=min(8, len(all_fetchers) or 1)
+    ) as pool:
+        futures = [pool.submit(fn, s) for fn, s in all_fetchers]
+        wait(futures)
+
+    return all_paths, youtube_entries
 
 def resolve_youtube_url(watch_url: str) -> Optional[dict]:
     """
     Resolve a YouTube watch URL to direct HLS stream URLs via yt-dlp.
 
-    YouTube serves video and audio as separate HLS streams. We resolve both
+    YouTube serves video and audio 
+    as separate HLS streams. We resolve both
     and return them as a dict so MPV can load video as the main file and
     add audio via audio-add. Both streams are HLS DVR so seeking works.
 
@@ -234,14 +292,6 @@ class YouTubeChannel(Channel):
         self._resolve_lock = threading.Lock()
         self._resolved_at: Optional[float] = None  # time.time() when resolved
 
-    def _ensure_duration(self) -> float:
-        return self.duration
-
-    def epg_info(self):
-        ch_label = "CH {:02d}".format(self.index + 1)
-        title = self.name.replace("_", " ").replace(".", " ").replace("-", " ")
-        return ch_label, title
-
     def is_url_fresh(self) -> bool:
         """Return True if the resolved URL is present and not yet expired."""
         if self.resolved_url is None or self._resolved_at is None:
@@ -304,7 +354,9 @@ class MPVController:
             "--demuxer-readahead-secs=10",
             # "--stream-lavf-o=fflags=nobuffer", # Disable for NFS
             "--stream-buffer-size=512K",
-            "--vd-lavc-threads=5",
+            # removing hardcoded thread value for ffmpeg to autodetect
+            # "--vd-lavc-threads=5",
+            "--vd-lavc-threads=0",
             "--demuxer-seekable-cache=no",
             "--hr-seek=no",
             "--hr-seek-demuxer-offset=0",
@@ -322,23 +374,6 @@ class MPVController:
             if os.path.exists(self.socket_path):
                 break
             time.sleep(0.1)
-
-    # def _send(self, command: list):
-    #     payload = json.dumps({"command": command}) + "\n"
-    #     try:
-    #         with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
-    #             s.settimeout(2)
-    #             s.connect(self.socket_path)
-    #             s.sendall(payload.encode())
-                
-    #             # Read the response from MPV
-    #             response = s.recv(4096).decode()
-    #             data = json.loads(response)
-            
-    #             # MPV returns {"data": <value>, "error": "success"}
-    #             return data.get("data")
-    #     except Exception:
-    #         pass
 
     def _send(self, command: list):
         payload = json.dumps({"command": command}) + "\n"
@@ -412,6 +447,7 @@ class MPVController:
                 time.sleep(0.05)
             
             self._send(["set_property", "pause", False])
+            self._send(["script-message", "cache-epg-info", ch_label, title])
             self._send(["script-message", "show-epg", ch_label, title])
 
     def stop(self):
@@ -439,6 +475,7 @@ class MPVController:
     
     def display_epg(self, channel: Channel):
         ch_label, title = channel.epg_info()
+        self._send(["script-message", "cache-epg-info", ch_label, title])  # ← new
         self._send(["script-message", "show-epg", ch_label, title])
 
 
@@ -486,22 +523,11 @@ class TVSimulator:
             except Exception as e:
                 print("Error loading config: {}".format(e))
                 sys.exit(1)
-
-            for source in cfg.get("sources", []):
-                src_type = source.get("type")
-                if src_type == "local":
-                    path = source.get("path", "")
-                    if os.path.isdir(path):
-                        all_paths.extend(find_videos(path))
-                    else:
-                        print("WARNING: local path not found: {}".format(path))
-                elif src_type == "youtube":
-                    url      = source.get("url", "")
-                    max_vids = source.get("max_videos", 20)
-                    if url:
-                        youtube_entries.extend(fetch_youtube_videos(url, max_vids))
-                else:
-                    print("WARNING: unknown source type: {}".format(src_type))
+            fetched_paths, fetched_yt = _fetch_sources_concurrent(
+                cfg.get("sources", [])
+            )
+            all_paths.extend(fetched_paths)
+            youtube_entries.extend(fetched_yt)
 
         # ── Load from directory argument if provided ──────────────────────
         if video_dir:
@@ -534,12 +560,12 @@ class TVSimulator:
         # Each channel gets its own thread so they resolve concurrently.
         yt_channels = [ch for ch in self.channels if isinstance(ch, YouTubeChannel)]
         if yt_channels:
-            print("  Resolving {} YouTube stream URL(s) in background...".format(
-                len(yt_channels)))
-            for yt_ch in yt_channels:
-                threading.Thread(
-                    target=yt_ch.resolve, daemon=True
-                ).start()
+            print("  Resolving {} YouTube stream URL(s) in background...".format(len(yt_channels)))
+            def _resolve_all():
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    for yt_ch in yt_channels:
+                        pool.submit(yt_ch.resolve)
+            threading.Thread(target=_resolve_all, daemon=True).start()
 
 
         self.current_index: int = 0
@@ -607,26 +633,31 @@ class TVSimulator:
         threading.Thread(target=self.mpv.load_channel, args=(ch,), daemon=True).start()
 
     def _tune_next(self):
-        tune_next_amnt = 1
-        potential_next_index = self.current_index + 1
-        potential_next_channel = self.channels[potential_next_index]
-        ch = self.channels[self.current_index]
-        if  isinstance(potential_next_channel, YouTubeChannel) and not potential_next_channel.is_url_fresh():
-            # Skipping this channel since its not resolved
+        n = len(self.channels)
+        next_index = (self.current_index + 1) % n
+
+        for _ in range(n):
+            ch = self.channels[next_index]
+            if not (isinstance(ch, YouTubeChannel) and not ch.is_url_fresh()):
+                break
             print('missing resolved url, skipping')
-            tune_next_amnt += tune_next_amnt
-        self._tune(self.current_index + tune_next_amnt)
+            next_index = (next_index + 1) % n
+
+        self._tune(next_index)
 
     def _tune_prev(self):
-        tune_prev_amnt = 1
-        ch = self.channels[self.current_index]
-        potential_prev_index = self.current_index - 1
-        potential_prev_channel = self.channels[potential_prev_index]
-        if  isinstance(potential_prev_channel, YouTubeChannel) and not potential_prev_channel.is_url_fresh():
+        n = len(self.channels)
+        next_index = (self.current_index - 1) % n
+
+        for _ in range(n):
+            ch = self.channels[next_index]
+            if not (isinstance(ch, YouTubeChannel) and not ch.is_url_fresh()):
+                break
             print('missing resolved url, skipping')
-            # Skipping this channel since its not resolved
-            tune_prev_amnt += tune_prev_amnt
-        self._tune(self.current_index - tune_prev_amnt)
+            next_index = (next_index - 1) % n
+
+        self._tune(next_index)
+
 
     def _tune_back(self):
         if self.previous_index is not None:
@@ -689,6 +720,12 @@ class TVSimulator:
         # Start on a random channel
         self.current_index = random.randrange(len(self.channels))
         ch = self.channels[self.current_index]
+        
+        # Ensure we don't land on a unresolved url channel from the start
+        while (isinstance(ch, YouTubeChannel) and not ch.is_url_fresh()):
+            self.current_index = (self.current_index + 1) % len(self.channels)
+            ch = self.channels[self.current_index]
+
         print("\r  \u25b6  {:<60}".format(ch.display_name()), end="", flush=True)
         self.mpv.load_channel(ch)
 
