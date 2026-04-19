@@ -555,7 +555,7 @@ def _make_handler(tv_ref):
 # TV simulator
 # ---------------------------------------------------------------------------
 class TVSimulator:
-    def __init__(self, video_dir: Optional[str] = None, config_path: Optional[str] = None):
+    def __init__(self, port, video_dir: Optional[str] = None, config_path: Optional[str] = None):
         all_paths: List[Path] = []
         youtube_entries: list = []
 
@@ -659,6 +659,9 @@ class TVSimulator:
         if video_dir:
             all_paths.extend(find_videos(video_dir))
 
+        if port:
+            self.user_defined_port = int(port)
+
         if not all_paths and not youtube_entries:
             print("No video sources found. Provide a directory or a config file.")
             sys.exit(1)
@@ -696,7 +699,7 @@ class TVSimulator:
         self.previous_index: Optional[int] = None
         self._quit = threading.Event()
 
-        self.control_port = self._free_port()
+        self.control_port = self._free_port(self)
         self._input_conf = self._write_input_conf()
         self._socket_path = "/tmp/mpv_tv_{}.sock".format(os.getpid())
         # Lua script lives next to this .py file
@@ -712,7 +715,9 @@ class TVSimulator:
 
     # ------------------------------------------------------------------
     @staticmethod
-    def _free_port() -> int:
+    def _free_port(self) -> int:
+        if self.user_defined_port:
+            return self.user_defined_port
         with _socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
@@ -862,6 +867,20 @@ def main():
         metavar="FILE",
         help="JSON config file defining local and YouTube channel sources.",
     )
+
+    # parser.add_argument(
+    #     "--host", "-ip",
+    #     default="127.0.0.1",
+    #     metavar="HOST",
+    #     help="Hostname for MPV to listen for commands on"
+    # )
+
+    parser.add_argument(
+        "--port", "-p",
+        default="7777",
+        help="Port for MPV to listen for commands on"
+    )
+
     args = parser.parse_args()
 
     if args.directory is None and args.config is None:
@@ -875,7 +894,7 @@ def main():
         print("Error: config file not found: {}".format(args.config))
         sys.exit(1)
 
-    TVSimulator(video_dir=args.directory, config_path=args.config).run()
+    TVSimulator(video_dir=args.directory, port=args.port, config_path=args.config).run()
 
 
 if __name__ == "__main__":
