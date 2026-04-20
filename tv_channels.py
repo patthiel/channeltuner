@@ -659,8 +659,7 @@ class TVSimulator:
         if video_dir:
             all_paths.extend(find_videos(video_dir))
 
-        if port:
-            self.user_defined_port = int(port)
+        self.user_defined_port = port
 
         if not all_paths and not youtube_entries:
             print("No video sources found. Provide a directory or a config file.")
@@ -868,16 +867,10 @@ def main():
         help="JSON config file defining local and YouTube channel sources.",
     )
 
-    # parser.add_argument(
-    #     "--host", "-ip",
-    #     default="127.0.0.1",
-    #     metavar="HOST",
-    #     help="Hostname for MPV to listen for commands on"
-    # )
-
     parser.add_argument(
         "--port", "-p",
-        default="7777",
+        type=int,
+        default=7777,
         help="Port for MPV to listen for commands on"
     )
 
