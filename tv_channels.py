@@ -92,13 +92,14 @@ def fetch_youtube_videos(channel_url: str, max_videos: int = 20) -> list:
                 "yt-dlp",
                 "--flat-playlist",
                 "--dump-json",
-                "--playlist-end", str(max_videos),
+                "--playlist-end", str(500), # Get 500 videos, we can shuffle and pick them later
                 "--no-warnings",
                 channel_url,
             ],
             capture_output=True, text=True, timeout=60,
         )
         videos = []
+
         for line in result.stdout.strip().splitlines():
             try:
                 data = json.loads(line)
@@ -112,7 +113,14 @@ def fetch_youtube_videos(channel_url: str, max_videos: int = 20) -> list:
                     videos.append({"url": url, "title": title, "duration": duration})
             except Exception:
                 continue
-        print("    {} videos found".format(len(videos)))
+        
+        # Shuffle the big list
+        random.shuffle(videos)
+
+        # reduce the videos to what we defined in our max
+        print("    {}  videos found, picking {}".format(len(videos), str(max_videos)))
+        videos = videos[:max_videos]
+
         return videos
     except FileNotFoundError:
         print("  WARNING: yt-dlp not found — skipping YouTube source")
