@@ -1,5 +1,8 @@
+.DS_Store
 # Config files are json files, ignore them
 *.json
 
 # Ignore our youtube cache directory
 .yt_cache/
+
+venv/
