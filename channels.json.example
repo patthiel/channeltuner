@@ -14,7 +14,7 @@
       "type": "youtube",
       "url": "https://www.youtube.com/@nevertoosmall/videos",
       "max_videos": 5,
-      "cache_dir": "/Users/patthiel/Developer/channeltuner/.yt_cache"
+      "cache_dir": ".yt_cache"
     },
     {
       "type": "youtube",
