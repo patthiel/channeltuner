@@ -92,7 +92,7 @@ def fetch_youtube_videos(channel_url: str, max_videos: int = 20) -> list:
                 "yt-dlp",
                 "--flat-playlist",
                 "--dump-json",
-                "--playlist-end", str(500), # Get 500 videos, we can shuffle and pick them later
+                "--playlist-end", "500", # Get 500 videos, we can shuffle and pick them later
                 "--no-warnings",
                 channel_url,
             ],
