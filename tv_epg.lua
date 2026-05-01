@@ -10,74 +10,146 @@ local assdraw = require "mp.assdraw"
 local ov    = mp.create_osd_overlay("ass-events")
 local timer = nil
 
--- Retro cable-EPG colours (BGR order for ASS)
-local COL_NAVY  = "351F0D"
-local COL_GOLD  = "55BBEE"
-local COL_DOT   = "AAAAAA"
-local COL_NOW   = "CCCCCC"
-local COL_WHITE = "FFFFFF"
+-- Retro Comcast EPG colours (ASS uses BGR hex order)
+-- e.g. RGB #0D1F35 → BGR string "351F0D"
+local COL_DARK_NAVY  = "351F0D"   -- #0D1F35  very dark navy (panel bg)
+local COL_TIMELINE   = "41280F"   -- #0F2841  slightly lighter navy (top bar)
+local COL_CHANNEL_BG = "A85F4B"   -- #4B5FA8  blue-purple (channel column)
+local COL_GRID_BG    = "48380C"   -- #0C3848  dark teal (empty grid cells)
+local COL_HIGHLIGHT  = "AFE6C8"   -- #C8E6AF  lime-green (now-playing cell)
+local COL_CELL_LINE  = "5A4A1A"   -- #1A4A5A  subtle grid-line tint
+local COL_WHITE      = "FFFFFF"
+local COL_DARK_TEXT  = "1C1C1C"   -- dark text for light (lime) background
+local COL_DIM_TEXT   = "BBBBBB"   -- dimmed text on dark backgrounds
 
 local last_ch_label = nil
 local last_title    = nil
 local mouse_timer   = nil
 
 local function draw_epg(ch_label, title)
-    -- Read the actual OSD canvas size at draw time so the box always
-    -- covers full width regardless of window size or video aspect ratio.
     local W = mp.get_property_number("osd-width",  1280)
     local H = mp.get_property_number("osd-height", 720)
 
-    -- Clamp to sane minimums so nothing divides by zero on startup
     if W < 100 then W = 1280 end
     if H < 100 then H = 720  end
 
-    local ass     = assdraw.ass_new()
-    local box_top = math.floor(H * 0.80)
-    local pad_x   = math.floor(W * 0.028)   -- ~36px at 1280 wide
-    local pad_y   = math.floor(H * 0.014)   -- ~10px at 720 tall
+    local ass = assdraw.ass_new()
+    ov.res_x  = W
+    ov.res_y  = H
 
-    -- Tell the overlay what canvas size we're drawing for
-    ov.res_x = W
-    ov.res_y = H
-    
-    --- We had some pretty EPG that we've decided to comment out because it wasn't behaving..
-    -- -- Background filled rectangle
-    -- ass:new_event()
-    -- ass:pos(0, 0)
-    -- ass:append("{\\bord0}{\\shad0}{\\1a&20&}")
-    -- ass:append("{\\1c&" .. COL_NAVY .. "&}{\\3c&" .. COL_NAVY .. "&}")
-    -- ass:draw_start()
-    -- ass:rect_cw(0, box_top, W, H)
-    -- ass:draw_stop()
+    -- Layout geometry
+    local panel_h   = math.floor(H * 0.24)        -- total panel height
+    local panel_top = H - panel_h                  -- y where panel starts
+    local bar_h     = math.floor(panel_h * 0.20)  -- top timeline bar
+    local ch_w      = math.floor(W * 0.115)       -- channel column width
+    local now_right = math.floor(W * 0.52)        -- right edge of now-playing cell
+    local pad_x     = math.floor(W * 0.012)
+    local pad_y     = math.floor(H * 0.009)
 
-    -- -- Thin gold accent line at the top of the box
-    -- ass:new_event()
-    -- ass:pos(0, 0)
-    -- ass:append("{\\bord0}{\\shad0}{\\1a&00&}")
-    -- ass:append("{\\1c&" .. COL_GOLD .. "&}")
-    -- ass:draw_start()
-    -- ass:rect_cw(0, box_top, W, box_top + math.max(2, math.floor(H * 0.004)))
-    -- ass:draw_stop()
+    -- Font sizes
+    local fs_ch    = math.floor(H * 0.030)   -- channel label
+    local fs_title = math.floor(H * 0.048)   -- show title
+    local fs_now   = math.floor(H * 0.021)   -- "NOW" / sub-labels
 
-    -- Font sizes scaled proportionally to canvas height
-    local fs_label = math.floor(H * 0.031)   -- ~22px at 720
-    local fs_title = math.floor(H * 0.058)   -- ~42px at 720
+    local grid_top = panel_top + bar_h
 
-    -- Label line
+    -- ── 1. Full panel background (dark navy) ──────────────────────────────
     ass:new_event()
-    ass:an(7)
-    ass:pos(pad_x, box_top + pad_y)
-    ass:append("{\\p0\\bord0\\shad0\\1a&00&\\fs" .. fs_label .. "\\b0}")
-    ass:append("{\\1c&" .. COL_DOT  .. "&}\xe2\x96\xa0 ")
-    ass:append("{\\1c&" .. COL_GOLD .. "&\\b1}" .. ch_label .. "  ")
-    ass:append("{\\1c&" .. COL_NOW  .. "&\\b0}\xc2\xb7 Now Playing")
+    ass:pos(0, 0)
+    ass:append("{\\bord0}{\\shad0}{\\1a&00&}{\\1c&" .. COL_DARK_NAVY .. "&}")
+    ass:draw_start()
+    ass:rect_cw(0, panel_top, W, H)
+    ass:draw_stop()
 
-    -- Title line
+    -- ── 2. Top timeline bar (slightly lighter navy) ────────────────────────
     ass:new_event()
-    ass:an(7)
-    ass:pos(pad_x, box_top + pad_y + math.floor(fs_label * 1.35))
+    ass:pos(0, 0)
+    ass:append("{\\bord0}{\\shad0}{\\1a&00&}{\\1c&" .. COL_TIMELINE .. "&}")
+    ass:draw_start()
+    ass:rect_cw(0, panel_top, W, grid_top)
+    ass:draw_stop()
+
+    -- ── 3. Channel column (blue-purple) ───────────────────────────────────
+    ass:new_event()
+    ass:pos(0, 0)
+    ass:append("{\\bord0}{\\shad0}{\\1a&00&}{\\1c&" .. COL_CHANNEL_BG .. "&}")
+    ass:draw_start()
+    ass:rect_cw(0, grid_top, ch_w, H)
+    ass:draw_stop()
+
+    -- ── 4. Now-playing cell (lime-green highlight) ─────────────────────────
+    ass:new_event()
+    ass:pos(0, 0)
+    ass:append("{\\bord0}{\\shad0}{\\1a&00&}{\\1c&" .. COL_HIGHLIGHT .. "&}")
+    ass:draw_start()
+    ass:rect_cw(ch_w, grid_top, now_right, H)
+    ass:draw_stop()
+
+    -- ── 5. Remaining grid cells (dark teal) ──────────────────────────────
+    ass:new_event()
+    ass:pos(0, 0)
+    ass:append("{\\bord0}{\\shad0}{\\1a&00&}{\\1c&" .. COL_GRID_BG .. "&}")
+    ass:draw_start()
+    ass:rect_cw(now_right, grid_top, W, H)
+    ass:draw_stop()
+
+    -- ── 6. Subtle horizontal grid line (mid-row divider) ──────────────────
+    local mid_y = grid_top + math.floor((H - grid_top) * 0.5)
+    ass:new_event()
+    ass:pos(0, 0)
+    ass:append("{\\bord0}{\\shad0}{\\1a&00&}{\\1c&" .. COL_CELL_LINE .. "&}")
+    ass:draw_start()
+    ass:rect_cw(ch_w, mid_y, W, mid_y + 1)
+    ass:draw_stop()
+
+    -- ── 7. Vertical separator: channel col / grid ─────────────────────────
+    ass:new_event()
+    ass:pos(0, 0)
+    ass:append("{\\bord0}{\\shad0}{\\1a&00&}{\\1c&" .. COL_CELL_LINE .. "&}")
+    ass:draw_start()
+    ass:rect_cw(ch_w, grid_top, ch_w + 1, H)
+    ass:draw_stop()
+
+    -- ── 8. Vertical separator: now-playing / future cells ─────────────────
+    ass:new_event()
+    ass:pos(0, 0)
+    ass:append("{\\bord0}{\\shad0}{\\1a&00&}{\\1c&" .. COL_CELL_LINE .. "&}")
+    ass:draw_start()
+    ass:rect_cw(now_right, grid_top, now_right + 1, H)
+    ass:draw_stop()
+
+    -- ── 9. "NOW" label in timeline bar (above channel column) ─────────────
+    ass:new_event()
+    ass:an(5)
+    ass:pos(math.floor(ch_w * 0.5), panel_top + math.floor(bar_h * 0.5))
+    ass:append("{\\p0\\bord0\\shad0\\1a&00&\\fs" .. fs_now .. "\\b1}")
+    ass:append("{\\1c&" .. COL_WHITE .. "&}NOW")
+
+    -- ── 10. Channel label (centered in channel column) ────────────────────
+    local col_mid_x = math.floor(ch_w * 0.5)
+    local col_mid_y = grid_top + math.floor((H - grid_top) * 0.5)
+    ass:new_event()
+    ass:an(5)
+    ass:pos(col_mid_x, col_mid_y)
+    ass:append("{\\p0\\bord0\\shad1\\1a&00&\\fs" .. fs_ch .. "\\b1}")
+    ass:append("{\\1c&" .. COL_WHITE .. "&}" .. ch_label)
+
+    -- ── 11. "Now Playing" sub-label in highlight cell ─────────────────────
+    local cell_mid_x = math.floor((ch_w + now_right) * 0.5)
+    local cell_top_y = grid_top + pad_y + math.floor(fs_now * 0.5)
+    ass:new_event()
+    ass:an(5)
+    ass:pos(cell_mid_x, cell_top_y)
+    ass:append("{\\p0\\bord0\\shad0\\1a&00&\\fs" .. fs_now .. "\\b0}")
+    ass:append("{\\1c&" .. "505050" .. "&}Now Playing")
+
+    -- ── 12. Show title (centered in highlight cell) ───────────────────────
+    local title_y = grid_top + math.floor((H - grid_top) * 0.55)
+    ass:new_event()
+    ass:an(5)
+    ass:pos(cell_mid_x, title_y)
     ass:append("{\\p0\\bord0\\shad0\\1a&00&\\fs" .. fs_title .. "\\b1}")
-    ass:append("{\\1c&" .. COL_WHITE .. "&}" .. title)
+    ass:append("{\\1c&" .. COL_DARK_TEXT .. "&}" .. title)
 
     ov.data = ass.text
     ov:update()
@@ -101,14 +173,12 @@ mp.register_script_message("hide-epg", function()
     hide_epg()
 end)
 
-
 mp.register_script_message("cache-epg-info", function(ch_label, title)
     last_ch_label = ch_label
     last_title    = title
 end)
 
 mp.observe_property("mouse-pos", "native", function(_, pos)
-    -- pos is nil when cursor leaves the window
     if not pos then return end
     if not last_ch_label or not last_title then return end
 
@@ -117,12 +187,12 @@ mp.observe_property("mouse-pos", "native", function(_, pos)
         mouse_timer = nil
     end
 
-    -- If EPG already showing from a channel change, just extend its timer
-    if epg_timer then
-        epg_timer:kill()
-        epg_timer = mp.add_timeout(3.5, function()
+    -- If a channel-change EPG is already showing, just extend its timeout
+    if timer then
+        timer:kill()
+        timer = mp.add_timeout(3.5, function()
             ov:remove()
-            epg_timer = nil
+            timer = nil
         end)
         return
     end
