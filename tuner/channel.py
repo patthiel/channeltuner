@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 from tuner.sources import get_video_duration, resolve_youtube_url
 
-# Channel and Youtube Channel classes
+# Channel, YouTubeChannel, and StreamChannel classes
 
 # ---------------------------------------------------------------------------
 # Channel
@@ -104,4 +104,29 @@ class YouTubeChannel(Channel):
             else:
                 print("  [YT] WARNING: could not resolve: {}".format(self.url),
                       flush=True)
+
+
+class StreamChannel(Channel):
+    """
+    A live stream channel (HLS, DASH, etc.).
+
+    Loaded directly by URL with no seeking — the stream is always at the
+    live edge, so random-offset and wall-clock position logic is skipped.
+    """
+    def __init__(self, index: int, url: str, channel_name: str):
+        safe_name = channel_name.replace("/", "-").replace("\\", "-")
+        super().__init__(index, Path(safe_name))
+        self.url = url
+        self.channel_name = channel_name
+        self.duration = 0.0
+
+    def _ensure_duration(self) -> float:
+        return 0.0
+
+    def current_position(self) -> float:
+        return 0.0
+
+    def epg_info(self):
+        ch_label = "CH {:02d}".format(self.index + 1)
+        return ch_label, self.channel_name
 

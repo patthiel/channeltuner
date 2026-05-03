@@ -6,7 +6,7 @@ import time
 import socket as _socket
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from tuner.channel import Channel, YouTubeChannel
+from tuner.channel import Channel, YouTubeChannel, StreamChannel
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -106,9 +106,14 @@ class MPVController:
     def load_channel(self, channel: Channel):
         ch_label, title = channel.epg_info()
         with self._lock:
-            pos = channel.current_position()     # compute BEFORE loadfile
+            if isinstance(channel, StreamChannel):
+                # Live stream — reduced readahead so playback starts on the
+                # first segment rather than waiting for 10 s of buffer.
+                self._send(["loadfile", channel.url, "replace", 0,
+                            "demuxer-readahead-secs=2,cache-secs=2"])
 
-            if isinstance(channel, YouTubeChannel):
+            elif isinstance(channel, YouTubeChannel):
+                pos = channel.current_position()
                 if channel.is_url_fresh():
                     # Resolved HLS URLs ready — load video stream directly
                     # and attach the audio stream via audio-add for full seeking.
@@ -130,18 +135,26 @@ class MPVController:
                     print("  [YT] stream URL not ready, loading watch URL: {}".format(
                         channel.name[:40]), flush=True)
                     self._send(["loadfile", channel.url, "replace"])
+                # Poll until MPV has opened the file and is paused at the right position
+                for _ in range(40):
+                    result = self._send(["get_property", "playback-time"])
+                    if result is not None:
+                        break
+                    time.sleep(0.05)
+                self._send(["set_property", "pause", False])
+
             else:
+                pos = channel.current_position()
                 self._send(["loadfile", str(channel.path), "replace", 0,
                             "start={},pause=yes".format(pos)])
-            
-            # # Poll until MPV has opened the file and is paused at the right position
-            for _ in range(40):
-                result = self._send(["get_property", "playback-time"])
-                if result is not None:
-                    break
-                time.sleep(0.05)
-            
-            self._send(["set_property", "pause", False])
+                # Poll until MPV has opened the file and is paused at the right position
+                for _ in range(40):
+                    result = self._send(["get_property", "playback-time"])
+                    if result is not None:
+                        break
+                    time.sleep(0.05)
+                self._send(["set_property", "pause", False])
+
             self._send(["script-message", "cache-epg-info", ch_label, title])
             self._send(["script-message", "show-epg", ch_label, title])
 

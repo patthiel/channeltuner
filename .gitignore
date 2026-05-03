@@ -29,3 +29,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Ignore favorites
+*-favs.txt
+

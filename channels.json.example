@@ -1,7 +1,7 @@
 {
-"sources": [
+  "sources": [
     {
-      "type": "local", 
+      "type": "local",
       "path": "/path/to/videos",
       "max_videos": 5
     },
@@ -19,8 +19,12 @@
     {
       "type": "youtube",
       "url": "https://www.youtube.com/@meanorangecat/videos",
-      "max_videos" : 5
+      "max_videos": 5
+    },
+    {
+      "type": "stream",
+      "url": "https://media-tyo.hls.nhkworld.jp/hls/w/live/master.m3u8",
+      "channel_name": "NHK World"
     }
   ]
 }
-

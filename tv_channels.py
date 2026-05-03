@@ -36,7 +36,7 @@ from http.server import HTTPServer
 from pathlib import Path
 from typing import List, Optional
 
-from tuner.channel import Channel, YouTubeChannel
+from tuner.channel import Channel, YouTubeChannel, StreamChannel
 from tuner.mpv import MPVController, _make_handler
 import tuner.sources
 
@@ -50,7 +50,10 @@ class TVSimulator:
         youtube_entries: list = []
 
         # ── Load from config file if provided ────────────────────────────
+        stream_channels: List[StreamChannel] = []
+
         if config_path:
+            self.config_path = config_path
             try:
                 cfg = tuner.sources.load_config(config_path)
             except Exception as e:
@@ -59,6 +62,7 @@ class TVSimulator:
 
             # Split sources by type so we can handle them appropriately
             local_sources   = []
+            live_sources    = []   # type: "stream" → direct URL live channels
             stream_sources  = []   # youtube with no cache_dir → stream
             cached_sources  = []   # youtube with cache_dir → download first
 
@@ -66,6 +70,8 @@ class TVSimulator:
                 src_type = source.get("type")
                 if src_type == "local":
                     local_sources.append(source)
+                elif src_type == "stream":
+                    live_sources.append(source)
                 elif src_type == "youtube":
                     if source.get("cache_dir"):
                         cached_sources.append(source)
@@ -81,6 +87,19 @@ class TVSimulator:
                     all_paths.extend(tuner.sources.find_videos(path))
                 else:
                     print("WARNING: local path not found: {}".format(path))
+
+            # Live stream sources — instantiate directly, no network fetch needed
+            for source in live_sources:
+                url  = source.get("url", "").strip()
+                name = source.get("channel_name", url)
+                if url:
+                    stream_channels.append(StreamChannel(
+                        index=0,   # re-indexed after shuffle
+                        url=url,
+                        channel_name=name,
+                    ))
+                else:
+                    print("WARNING: stream source missing url: {}".format(source))
 
             # Streaming YouTube sources — fetch metadata concurrently
             if stream_sources:
@@ -151,11 +170,11 @@ class TVSimulator:
 
         self.user_defined_port = port
 
-        if not all_paths and not youtube_entries:
+        if not all_paths and not youtube_entries and not stream_channels:
             print("No video sources found. Provide a directory or a config file.")
             sys.exit(1)
 
-        # ── Build channel list: local first, then YouTube, then shuffle ───
+        # ── Build channel list: local, YouTube, live streams, then shuffle ─
         random.shuffle(all_paths)
         channels: List[Channel] = []
         for path in all_paths:
@@ -167,6 +186,9 @@ class TVSimulator:
                 title    = entry["title"],
                 duration = entry["duration"],
             ))
+        for sc in stream_channels:
+            sc.index = len(channels)
+            channels.append(sc)
         random.shuffle(channels)
         # Re-index after shuffle so channel numbers are sequential
         for i, ch in enumerate(channels):
@@ -236,13 +258,14 @@ class TVSimulator:
         if index == self.current_index:
             return
         # Save MPV's current position onto the channel we're LEAVING
-        try:
-            departing = self.channels[self.current_index]
-            departing.previous_position = self.mpv.get_pos_from_mpv()
-            departing.time_of_departure = time.time()   # ← record when we left
-        except Exception as e:
-            print(e)
-            # pass
+        # (skip for live streams — they have no meaningful position)
+        departing = self.channels[self.current_index]
+        if not isinstance(departing, StreamChannel):
+            try:
+                departing.previous_position = self.mpv.get_pos_from_mpv()
+                departing.time_of_departure = time.time()
+            except Exception as e:
+                print(e)
         self.previous_index = self.current_index
         self.current_index = index
         ch = self.channels[self.current_index]
@@ -271,6 +294,10 @@ class TVSimulator:
     def _current_video_path(self):
         ch = self.channels[self.current_index]
         print("\n  \U0001f4c2  {}".format(ch.path), flush=True)
+        favorites_file = "{}-favs.txt"
+        with open(favorites_file.format(self.config_path), "a") as f:
+            f.write(str(ch.path) + "\n")
+            
 
     # ------------------------------------------------------------------
     def _start_http_server(self):
