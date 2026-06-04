@@ -5,4 +5,31 @@
 # Ignore our youtube cache directory
 .yt_cache/
 
+### Python ###
+# Byte-compiled / optimized / DLL files
+**/__pycache__/
+*.cpython-310.pyc
+*.pyc
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+
+
+# Environments
+.env
+.venv
+env/
 venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Ignore favorites
+*-favs.txt
+
