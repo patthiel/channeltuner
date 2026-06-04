@@ -62,15 +62,16 @@ class TVSimulator:
                 if os.path.isdir(path):
                     local_paths = []
                     local_paths.extend(tuner.sources.find_videos(path))
+                    
+                    max_videos = source.get("max_videos")
+                    
+                    # Trim our local paths if we have defined max:
+                    if max_videos:
+                        local_paths = local_paths[:max_videos]
+
+                    all_paths.extend(local_paths)
                 else:
                     print("WARNING: local path not found: {}".format(path))
-                max_videos = source.get("max_videos")
-            
-                # Trim our local paths if we have defined max:
-                if max_videos:
-                    local_paths = local_paths[:max_videos]
-
-                all_paths.extend(local_paths)
 
 
             # Live stream sources — instantiate directly, no network fetch needed
