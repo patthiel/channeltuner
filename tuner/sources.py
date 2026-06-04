@@ -1,6 +1,5 @@
 import json
 import os
-import subprocess
 import random
 import subprocess
 import threading
@@ -11,8 +10,9 @@ from typing import List, Optional
 from tuner.constants import VIDEO_EXTENSIONS
 
 
-# Helper functions for finding videos and video metadata:
+# Helper functions for finding videos and handling video metadata
 
+# Find videos and shuffle
 def find_videos(root: str) -> List[Path]:
     videos = []
     for dirpath, _, filenames in os.walk(root, followlinks=True):

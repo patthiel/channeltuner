@@ -84,9 +84,18 @@ class TVSimulator:
             for source in local_sources:
                 path = source.get("path", "")
                 if os.path.isdir(path):
-                    all_paths.extend(tuner.sources.find_videos(path))
+                    local_paths = []
+                    local_paths.extend(tuner.sources.find_videos(path))
                 else:
                     print("WARNING: local path not found: {}".format(path))
+                max_videos = source.get("max_videos")
+            
+                # Trim our local paths if we have defined max:
+                if max_videos:
+                    local_paths = local_paths[:max_videos]
+
+                all_paths.extend(local_paths)
+
 
             # Live stream sources — instantiate directly, no network fetch needed
             for source in live_sources:
@@ -167,6 +176,7 @@ class TVSimulator:
         # ── Load from directory argument if provided ──────────────────────
         if video_dir:
             all_paths.extend(tuner.sources.find_videos(video_dir))
+            
 
         self.user_defined_port = port
 
@@ -296,7 +306,8 @@ class TVSimulator:
         print("\n  \U0001f4c2  {}".format(ch.path), flush=True)
         favorites_file = "{}-favs.txt"
         with open(favorites_file.format(self.config_path), "a") as f:
-            f.write(str(ch.path) + "\n")
+            vid_file = str(ch.url) if isinstance(ch, YouTubeChannel) else str(ch.path)
+            f.write(vid_file + "\n")
             
 
     # ------------------------------------------------------------------
