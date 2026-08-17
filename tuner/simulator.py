@@ -280,7 +280,10 @@ class TVSimulator:
             pass
     def _current_video_path(self):
         ch = self.channels[self.current_index]
-        print("\n  \U0001f4c2  {}".format(ch.path), flush=True)
+        if isinstance(ch, YouTubeChannel):
+            print("\n  \U0001f4c2  {}".format(ch.url), flush=True)
+        else:
+            print("\n  \U0001f4c2  {}".format(ch.path), flush=True)
         favorites_file = "{}-favs.txt"
         with open(favorites_file.format(self.config_path), "a") as f:
             vid_file = str(ch.url) if isinstance(ch, YouTubeChannel) else str(ch.path)
