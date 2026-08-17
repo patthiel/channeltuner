@@ -8,17 +8,21 @@ Every video in the sources gets turned into a channel which, when tuned to, will
 
 ## Install
 
-* Tested with Python 3.10.16
+* Requires Python >= 3.11
 
 * Requires MPV
-* Youtube support requires yt-dlp
+* Youtube support requires yt-dlp,  I've pinned the latest version in the requirements file, but i've found installing the latest nightly performs better `python -m pip install -U --pre "yt-dlp[default]"`
+
 
 ```bash
 # Use homebrew to install mpv on the system
 $ brew install mpv ffmpeg
 
+# Create a virtualenv
+$ python -m venv ./venv
+
 # install python dependencies 
-$ pip install mpv yt-dlp
+$ pip install -r requirements.txt
 ```
 
 
