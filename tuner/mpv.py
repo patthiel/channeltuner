@@ -56,7 +56,8 @@ class MPVController:
             "--hr-seek-demuxer-offset=0",
             "--vd-lavc-fast=yes",
             "--opengl-pbo=yes",
-            "--metadata-codepage=utf-8"
+            "--metadata-codepage=utf-8",
+            "--video-aspect-override=no"
         ]
         self._proc = subprocess.Popen(
             cmd,
