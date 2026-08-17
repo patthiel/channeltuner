@@ -38,6 +38,7 @@ class TVSimulator:
 
             # Split sources by type so we can handle them appropriately
             local_sources   = []
+            file_sources    = []
             live_sources    = []   # type: "stream" → direct URL live channels
             stream_sources  = []   # youtube with no cache_dir → stream
             cached_sources  = []   # youtube with cache_dir → download first
@@ -46,6 +47,8 @@ class TVSimulator:
                 src_type = source.get("type")
                 if src_type == "local":
                     local_sources.append(source)
+                elif src_type == "file":
+                    file_sources.append(source)
                 elif src_type == "stream":
                     live_sources.append(source)
                 elif src_type == "youtube":
@@ -72,6 +75,13 @@ class TVSimulator:
                     all_paths.extend(local_paths)
                 else:
                     print("WARNING: local path not found: {}".format(path))
+
+            # File sources should just work
+            for source in file_sources:
+                path = source.get("path", "")
+                files = []
+                files.append(Path(path))
+                all_paths.extend(tuner.sources.process_file_sources(files))
 
 
             # Live stream sources — instantiate directly, no network fetch needed

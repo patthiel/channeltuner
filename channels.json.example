@@ -6,6 +6,10 @@
       "max_videos": 5
     },
     {
+      "type": "file",
+      "path": "/path/to/video.mp4"
+    },
+    {
       "type": "youtube",
       "url": "https://www.youtube.com/@jameshoffmann/videos",
       "max_videos": 5

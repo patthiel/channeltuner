@@ -25,6 +25,15 @@ def find_videos(root: str) -> List[Path]:
     random.shuffle(videos)
     return videos
 
+def process_file_sources(file_paths: list):
+    files = []
+    for f in file_paths:
+        if Path(f).suffix.lower() in VIDEO_EXTENSIONS:
+            files.append(Path(f))
+
+    files.sort()
+    random.shuffle(files)
+    return files
 
 def get_video_duration(path: Path) -> Optional[float]:
     try:
