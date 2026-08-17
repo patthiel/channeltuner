@@ -9,6 +9,7 @@ local assdraw = require "mp.assdraw"
 
 local ov    = mp.create_osd_overlay("ass-events")
 local timer = nil
+local control_port = mp.get_opt("control_port") or "8765"
 
 -- Retro cable-EPG colours (BGR order for ASS)
 local COL_NAVY  = "351F0D"
