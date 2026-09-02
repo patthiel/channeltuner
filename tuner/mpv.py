@@ -114,15 +114,20 @@ class MPVController:
                             "demuxer-readahead-secs=2,cache-secs=2"])
 
             elif isinstance(channel, YouTubeChannel):
-                pos = channel.current_position()
-                if channel.is_url_fresh():
-                    # Resolved HLS URLs ready — load video stream directly
-                    # and attach the audio stream via audio-add for full seeking.
+                if channel.is_live:
+                    # YouTube live stream — let MPV's yt-dlp resolve at play time.
+                    # No seeking; reduced readahead matches StreamChannel behaviour.
+                    self._send(["loadfile", channel.url, "replace", 0,
+                                "demuxer-readahead-secs=2,cache-secs=2"])
+
+                elif channel.is_url_fresh():
+                    # Resolved HLS URLs ready — load video stream directly and
+                    # attach audio via audio-add for full seeking support.
+                    pos = channel.current_position()
                     video_url = channel.resolved_url["video"]
                     audio_url = channel.resolved_url.get("audio")
                     self._send(["loadfile", video_url, "replace", 0,
                                 "start={},pause=yes".format(pos)])
-                    # Poll until MPV has the video stream open
                     for _ in range(60):
                         result = self._send(["get_property", "playback-time"])
                         if result is not None:
@@ -130,19 +135,25 @@ class MPVController:
                         time.sleep(0.05)
                     if audio_url:
                         self._send(["audio-add", audio_url, "select"])
+                    for _ in range(40):
+                        result = self._send(["get_property", "playback-time"])
+                        if result is not None:
+                            break
+                        time.sleep(0.05)
+                    self._send(["set_property", "pause", False])
+
                 else:
-                    # URL not yet resolved — fall back to watch URL (no seeking).
-                    # A refresh will happen in the background.
-                    print("  [YT] stream URL not ready, loading watch URL: {}".format(
-                        channel.name[:40]), flush=True)
-                    self._send(["loadfile", channel.url, "replace"])
-                # Poll until MPV has opened the file and is paused at the right position
-                for _ in range(40):
-                    result = self._send(["get_property", "playback-time"])
-                    if result is not None:
-                        break
-                    time.sleep(0.05)
-                self._send(["set_property", "pause", False])
+                    # URL not yet resolved — fall back to watch URL without seeking.
+                    # The background resolve() thread will update it for next time.
+                    pos = channel.current_position()
+                    self._send(["loadfile", channel.url, "replace", 0,
+                                "start={},pause=yes".format(pos)])
+                    for _ in range(40):
+                        result = self._send(["get_property", "playback-time"])
+                        if result is not None:
+                            break
+                        time.sleep(0.05)
+                    self._send(["set_property", "pause", False])
 
             else:
                 pos = channel.current_position()

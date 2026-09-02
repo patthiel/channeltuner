@@ -39,7 +39,7 @@ $ python ./tv_channels.py --config ./channels.json
 
 * Up and down keybindings for next and previous channels.
 * `F` Fullscreen 
-* `\` prints the path to the current video in the console (helpful in large video libraries, or wanting to know which stream is playing)
+* `\` Creates a favorites file, adds the current video to it, and prints the path to the current video in the console (helpful in large video libraries, or wanting to know which stream is playing)
 * `Q` Exits the MPV and the script
 * `ESC` Exits the script
 * All other standard MPV keybindings are applied.

@@ -37,11 +37,12 @@ class TVSimulator:
                 sys.exit(1)
 
             # Split sources by type so we can handle them appropriately
-            local_sources   = []
-            file_sources    = []
-            live_sources    = []   # type: "stream" → direct URL live channels
-            stream_sources  = []   # youtube with no cache_dir → stream
-            cached_sources  = []   # youtube with cache_dir → download first
+            local_sources        = []
+            file_sources         = []
+            live_sources         = []   # type: "stream" → direct URL live channels
+            youtube_live_sources = []   # type: "youtube" + is_live: true
+            stream_sources       = []   # youtube with no cache_dir → stream
+            cached_sources       = []   # youtube with cache_dir → download first
 
             for source in cfg.get("sources", []):
                 src_type = source.get("type")
@@ -52,7 +53,9 @@ class TVSimulator:
                 elif src_type == "stream":
                     live_sources.append(source)
                 elif src_type == "youtube":
-                    if source.get("cache_dir"):
+                    if source.get("is_live"):
+                        youtube_live_sources.append(source)
+                    elif source.get("cache_dir"):
                         cached_sources.append(source)
                     else:
                         stream_sources.append(source)
@@ -97,14 +100,27 @@ class TVSimulator:
                 else:
                     print("WARNING: stream source missing url: {}".format(source))
 
+            # YouTube live stream sources — single video, no playlist fetch needed
+            for source in youtube_live_sources:
+                url  = source.get("url", "").strip()
+                name = source.get("channel_name")
+                if not url:
+                    print("WARNING: youtube live source missing url: {}".format(source))
+                    continue
+                if not name:
+                    info = tuner.sources.fetch_youtube_live_info(url)
+                    name = info["title"]
+                youtube_entries.append({"url": url, "title": name, "duration": 0.0, "is_live": True})
+
             # Streaming YouTube sources — fetch metadata concurrently
             if stream_sources:
                 stream_lock = threading.Lock()
                 def fetch_stream(source):
                     url      = source.get("url", "")
                     max_vids = source.get("max_videos", 20)
+                    is_live  = source.get("is_live", False)
                     if url:
-                        entries = tuner.sources.fetch_youtube_videos(url, max_vids)
+                        entries = tuner.sources.fetch_youtube_videos(url, max_vids, is_live)
                         with stream_lock:
                             youtube_entries.extend(entries)
                 with concurrent.futures.ThreadPoolExecutor(
@@ -182,6 +198,7 @@ class TVSimulator:
                 url      = entry["url"],
                 title    = entry["title"],
                 duration = entry["duration"],
+                is_live  = entry["is_live"]
             ))
         for sc in stream_channels:
             sc.index = len(channels)
@@ -193,15 +210,22 @@ class TVSimulator:
 
         self.channels: List[Channel] = channels
 
-        # Kick off background resolution for all YouTube channels.
-        # Each channel gets its own thread so they resolve concurrently.
-        yt_channels = [ch for ch in self.channels if isinstance(ch, YouTubeChannel)]
+        # Kick off background resolution for non-live YouTube channels.
+        # Live channels use MPV's own yt-dlp integration at play time.
+        # Semaphore caps concurrent yt-dlp subprocesses to avoid hitting the
+        # OS open-file-descriptor limit when there are hundreds of channels.
+        yt_channels = [ch for ch in self.channels
+                       if isinstance(ch, YouTubeChannel) and not ch.is_live]
         if yt_channels:
             print("  Resolving {} YouTube stream URL(s) in background...".format(
                 len(yt_channels)))
+            _resolve_sem = threading.Semaphore(8)
+            def _resolve_limited(ch):
+                with _resolve_sem:
+                    ch.resolve()
             for yt_ch in yt_channels:
                 threading.Thread(
-                    target=yt_ch.resolve, daemon=True
+                    target=_resolve_limited, args=(yt_ch,), daemon=True
                 ).start()
         self.current_index: int = 0
         self.previous_index: Optional[int] = None
@@ -257,7 +281,7 @@ class TVSimulator:
         # Save MPV's current position onto the channel we're LEAVING
         # (skip for live streams — they have no meaningful position)
         departing = self.channels[self.current_index]
-        if not isinstance(departing, StreamChannel):
+        if not isinstance(departing, StreamChannel) and not getattr(departing, 'is_live', False):
             try:
                 departing.previous_position = self.mpv.get_pos_from_mpv()
                 departing.time_of_departure = time.time()
@@ -288,16 +312,33 @@ class TVSimulator:
                 self.mpv.display_epg(ch)
         except Exception:
             pass
+    
     def _current_video_path(self):
         ch = self.channels[self.current_index]
         if isinstance(ch, YouTubeChannel):
             print("\n  \U0001f4c2  {}".format(ch.url), flush=True)
         else:
             print("\n  \U0001f4c2  {}".format(ch.path), flush=True)
-        favorites_file = "{}-favs.txt"
-        with open(favorites_file.format(self.config_path), "a") as f:
-            vid_file = str(ch.url) if isinstance(ch, YouTubeChannel) else str(ch.path)
-            f.write(vid_file + "\n")
+
+        def load_or_create_fav_file(filepath):
+            if os.path.exists(filepath):
+                with open(filepath, "r") as f:
+                    data = json.load(f)
+            else:
+                data = { "sources" : [] }
+            return data
+        
+        favorites_file_path = "{}-favorites.json"
+
+        favorites_file = load_or_create_fav_file(favorites_file_path.format(self.config_path))
+
+        if isinstance(ch, YouTubeChannel):
+            favorites_file["sources"].append({"type": "youtube", "path": str(ch.url)})
+        else:
+            favorites_file["sources"].append({"type": "file", "path": str(ch.path)})
+
+        with open(favorites_file_path.format(self.config_path), "w") as f:
+            json.dump(favorites_file, f)
             
 
     # ------------------------------------------------------------------
@@ -328,13 +369,17 @@ class TVSimulator:
         threading.Thread(target=prefetch, daemon=True).start()
 
         # Periodically refresh YouTube stream URLs before they expire
+        _refresh_sem = threading.Semaphore(8)
         def refresh_youtube_urls():
             while not self._quit.is_set():
                 self._quit.wait(timeout=300)   # check every 5 minutes
                 for ch in self.channels:
-                    if isinstance(ch, YouTubeChannel) and not ch.is_url_fresh():
+                    if isinstance(ch, YouTubeChannel) and not ch.is_live and not ch.is_url_fresh():
+                        def _refresh(ch=ch):
+                            with _refresh_sem:
+                                ch.resolve()
                         threading.Thread(
-                            target=ch.resolve, daemon=True
+                            target=_refresh, daemon=True
                         ).start()
         threading.Thread(target=refresh_youtube_urls, daemon=True).start()
 

@@ -10,15 +10,20 @@
       "path": "/path/to/video.mp4"
     },
     {
-      "type": "youtube",
-      "url": "https://www.youtube.com/@jameshoffmann/videos",
-      "max_videos": 5
+       "type": "youtube",
+       "url": "https://www.youtube.com/@jameshoffmann/videos",
+       "max_videos": 5
     },
     {
       "type": "youtube",
       "url": "https://www.youtube.com/@nevertoosmall/videos",
       "max_videos": 5,
       "cache_dir": ".yt_cache"
+    },
+    {
+      "type": "youtube",
+      "url": "https://www.youtube.com/@jameshoffmann/videos",
+      "max_videos": 5
     },
     {
       "type": "youtube",
@@ -29,6 +34,12 @@
       "type": "stream",
       "url": "https://media-tyo.hls.nhkworld.jp/hls/w/live/master.m3u8",
       "channel_name": "NHK World"
+    },
+    {
+      "type": "youtube",
+      "url": "https://www.youtube.com/watch?v=gFRtAAmiFbE",
+      "is_live": true,
+      "channel_name": "Kabukicho Live Channel"
     }
   ]
 }

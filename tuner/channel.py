@@ -68,7 +68,7 @@ class YouTubeChannel(Channel):
     as a separate track via audio-add — this gives full seeking support
     since both streams are served as HLS DVR playlists.
     """
-    def __init__(self, index: int, url: str, title: str, duration: float):
+    def __init__(self, index: int, url: str, title: str, duration: float, is_live: bool):
         # Use a sanitised title as a fake Path so display_name/epg_info work.
         safe_title = title.replace("/", "-").replace("\\", "-")
         super().__init__(index, Path(safe_title))
@@ -77,6 +77,7 @@ class YouTubeChannel(Channel):
         self.resolved_url: Optional[dict] = None   # {"video": ..., "audio": ...}
         self._resolve_lock = threading.Lock()
         self._resolved_at: Optional[float] = None  # time.time() when resolved
+        self.is_live = is_live
 
     def _ensure_duration(self) -> float:
         return self.duration

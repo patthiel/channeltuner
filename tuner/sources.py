@@ -51,7 +51,7 @@ def get_video_duration(path: Path) -> Optional[float]:
 # ---------------------------------------------------------------------------
 # YouTube support — requires yt-dlp on PATH and MPV built with yt-dlp support
 # ---------------------------------------------------------------------------
-def fetch_youtube_videos(channel_url: str, max_videos: int = 20) -> list:
+def fetch_youtube_videos(channel_url: str, max_videos: int = 20, is_live: bool = False) -> list:
     """
     Use yt-dlp --flat-playlist to list videos from a YouTube channel URL.
     Returns a list of dicts with keys: url, title, duration.
@@ -64,7 +64,7 @@ def fetch_youtube_videos(channel_url: str, max_videos: int = 20) -> list:
                 "yt-dlp",
                 "--flat-playlist",
                 "--dump-json",
-                "--playlist-end", "500", # Get 500 videos, we can shuffle and pick them later
+                "--playlist-end", "500",
                 "--no-warnings",
                 channel_url,
             ],
@@ -82,7 +82,7 @@ def fetch_youtube_videos(channel_url: str, max_videos: int = 20) -> list:
                     # Ensure we have a full watch URL
                     if not url.startswith("http"):
                         url = "https://www.youtube.com/watch?v=" + url
-                    videos.append({"url": url, "title": title, "duration": duration})
+                    videos.append({"url": url, "title": title, "duration": duration, "is_live": is_live})
             except Exception:
                 continue
         
@@ -100,6 +100,24 @@ def fetch_youtube_videos(channel_url: str, max_videos: int = 20) -> list:
     except Exception as e:
         print("  WARNING: Could not fetch YouTube channel: {}".format(e))
         return []
+
+
+def fetch_youtube_live_info(url: str) -> dict:
+    """
+    Fetch the title of a single YouTube live stream URL.
+    Returns {"url": url, "title": title}. Falls back to the URL as title on failure.
+    """
+    print("  Fetching YouTube live stream info: {}".format(url))
+    try:
+        result = subprocess.run(
+            ["yt-dlp", "--no-playlist", "--dump-json", "--no-warnings", url],
+            capture_output=True, text=True, timeout=30,
+        )
+        data = json.loads(result.stdout.strip().splitlines()[0])
+        return {"url": url, "title": data.get("title", url)}
+    except Exception:
+        print("  WARNING: could not fetch live stream info for: {}".format(url))
+        return {"url": url, "title": url}
 
 
 def resolve_youtube_url(watch_url: str) -> Optional[dict]:
