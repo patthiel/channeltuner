@@ -1,4 +1,5 @@
 {
+  "youtube_cache_hours": 12,
   "sources": [
     {
       "type": "local",

@@ -1,11 +1,15 @@
+import hashlib
 import json
 import os
 import random
 import subprocess
 import threading
+import time
 import concurrent.futures
 from pathlib import Path
 from typing import List, Optional
+
+PLAYLIST_CACHE_TTL = 12 * 60 * 60  # 12 hours in seconds
 
 from tuner.constants import VIDEO_EXTENSIONS
 
@@ -51,12 +55,63 @@ def get_video_duration(path: Path) -> Optional[float]:
 # ---------------------------------------------------------------------------
 # YouTube support — requires yt-dlp on PATH and MPV built with yt-dlp support
 # ---------------------------------------------------------------------------
-def fetch_youtube_videos(channel_url: str, max_videos: int = 20, is_live: bool = False) -> list:
+def _playlist_cache_path(channel_url: str, cache_dir: str) -> Path:
+    key = hashlib.md5(channel_url.encode()).hexdigest()
+    return Path(cache_dir) / "{}.json".format(key)
+
+
+def purge_playlist_cache(cache_dir: str = ".yt_cache", ttl: float = PLAYLIST_CACHE_TTL):
+    """Delete playlist cache files whose mtime is older than ttl seconds."""
+    cache_path = Path(cache_dir)
+    if not cache_path.exists():
+        return
+    now = time.time()
+    purged = 0
+    for f in cache_path.glob("*.json"):
+        try:
+            if now - f.stat().st_mtime > ttl:
+                f.unlink()
+                purged += 1
+        except Exception:
+            pass
+    if purged:
+        print("  [playlist cache] purged {} expired file(s) from {}".format(purged, cache_dir))
+
+
+def fetch_youtube_videos(
+    channel_url: str,
+    max_videos: int = 20,
+    is_live: bool = False,
+    playlist_cache_dir: str = ".yt_cache",
+    ttl: float = PLAYLIST_CACHE_TTL,
+) -> list:
     """
     Use yt-dlp --flat-playlist to list videos from a YouTube channel URL.
-    Returns a list of dicts with keys: url, title, duration.
-    No downloading — metadata only.
+    Returns a list of dicts with keys: url, title, duration, is_live.
+
+    Results are cached to playlist_cache_dir for PLAYLIST_CACHE_TTL seconds
+    (12 hours) so repeated startups skip the yt-dlp call entirely.
+    The full fetched list is stored; max_videos is applied at load time so
+    changing it never requires a cache bust.
     """
+    # ── Cache read ────────────────────────────────────────────────────────
+    if playlist_cache_dir:
+        cache_file = _playlist_cache_path(channel_url, playlist_cache_dir)
+        if cache_file.exists():
+            age = time.time() - cache_file.stat().st_mtime
+            if age < ttl:
+                try:
+                    cached = json.loads(cache_file.read_text())
+                    videos = cached.get("videos", [])
+                    random.shuffle(videos)
+                    pick = min(max_videos, len(videos))
+                    print("  [playlist cache] hit: {} ({} videos, picking {})".format(
+                        channel_url, len(videos), pick))
+                    return videos[:pick]
+                except Exception:
+                    pass  # corrupt cache — fall through to fetch
+
+    # ── Fetch from yt-dlp ─────────────────────────────────────────────────
     print("  Fetching YouTube channel: {}".format(channel_url))
     try:
         result = subprocess.run(
@@ -79,21 +134,26 @@ def fetch_youtube_videos(channel_url: str, max_videos: int = 20, is_live: bool =
                 title    = data.get("title", "Unknown")
                 duration = float(data.get("duration") or 1800)
                 if url:
-                    # Ensure we have a full watch URL
                     if not url.startswith("http"):
                         url = "https://www.youtube.com/watch?v=" + url
                     videos.append({"url": url, "title": title, "duration": duration, "is_live": is_live})
             except Exception:
                 continue
-        
-        # Shuffle the big list
+
+        # ── Cache write (store full list before shuffle/trim) ─────────────
+        if playlist_cache_dir and videos:
+            try:
+                cache_file = _playlist_cache_path(channel_url, playlist_cache_dir)
+                cache_file.parent.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(json.dumps({"videos": videos}))
+            except Exception as e:
+                print("  WARNING: could not write playlist cache: {}".format(e))
+
         random.shuffle(videos)
+        pick = min(max_videos, len(videos))
+        print("    {} videos found, picking {}".format(len(videos), pick))
+        return videos[:pick]
 
-        # reduce the videos to what we defined in our max
-        print("    {}  videos found, picking {}".format(len(videos), str(max_videos)))
-        videos = videos[:max_videos]
-
-        return videos
     except FileNotFoundError:
         print("  WARNING: yt-dlp not found — skipping YouTube source")
         return []

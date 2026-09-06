@@ -36,6 +36,11 @@ class TVSimulator:
                 print("Error loading config: {}".format(e))
                 sys.exit(1)
 
+            # Global YouTube playlist cache TTL (default 12 hours)
+            cache_hours = cfg.get("youtube_cache_hours", 12)
+            playlist_cache_ttl = cache_hours * 3600
+            tuner.sources.purge_playlist_cache(".yt_cache", playlist_cache_ttl)
+
             # Split sources by type so we can handle them appropriately
             local_sources        = []
             file_sources         = []
@@ -120,7 +125,8 @@ class TVSimulator:
                     max_vids = source.get("max_videos", 20)
                     is_live  = source.get("is_live", False)
                     if url:
-                        entries = tuner.sources.fetch_youtube_videos(url, max_vids, is_live)
+                        entries = tuner.sources.fetch_youtube_videos(
+                            url, max_vids, is_live, ttl=playlist_cache_ttl)
                         with stream_lock:
                             youtube_entries.extend(entries)
                 with concurrent.futures.ThreadPoolExecutor(
@@ -140,7 +146,8 @@ class TVSimulator:
                     max_vids  = source.get("max_videos", 20)
                     cache_dir = source.get("cache_dir", "")
                     if url and cache_dir:
-                        entries = tuner.sources.fetch_youtube_videos(url, max_vids)
+                        entries = tuner.sources.fetch_youtube_videos(
+                            url, max_vids, ttl=playlist_cache_ttl)
                         with meta_lock:
                             for e in entries:
                                 all_cached_entries.append((e, cache_dir))

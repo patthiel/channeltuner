@@ -128,18 +128,15 @@ class MPVController:
                     audio_url = channel.resolved_url.get("audio")
                     self._send(["loadfile", video_url, "replace", 0,
                                 "start={},pause=yes".format(pos)])
-                    for _ in range(60):
+                    # Wait for MPV to open the stream and seek to position,
+                    # then attach audio and unpause in one pass.
+                    for _ in range(300):
                         result = self._send(["get_property", "playback-time"])
                         if result is not None:
                             break
-                        time.sleep(0.05)
+                        time.sleep(0.01)
                     if audio_url:
                         self._send(["audio-add", audio_url, "select"])
-                    for _ in range(40):
-                        result = self._send(["get_property", "playback-time"])
-                        if result is not None:
-                            break
-                        time.sleep(0.05)
                     self._send(["set_property", "pause", False])
 
                 else:
@@ -148,11 +145,11 @@ class MPVController:
                     pos = channel.current_position()
                     self._send(["loadfile", channel.url, "replace", 0,
                                 "start={},pause=yes".format(pos)])
-                    for _ in range(40):
+                    for _ in range(300):
                         result = self._send(["get_property", "playback-time"])
                         if result is not None:
                             break
-                        time.sleep(0.05)
+                        time.sleep(0.01)
                     self._send(["set_property", "pause", False])
 
             else:
