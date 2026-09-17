@@ -16,6 +16,7 @@ class Channel:
         self.path = path
         self.name = path.stem
         self.duration: Optional[float] = None
+        self.start_time: Optional[float] = None
         self._wall_start: Optional[float] = None
         self.previous_position = None
         self.time_of_departure = None
@@ -35,6 +36,9 @@ class Channel:
             self._wall_start = time.time() - adjusted
             self.previous_position = None
             self.time_of_departure = None
+        elif self.start_time:
+            # A start time was provided, replace wall start with this
+            self._wall_start = time.time() - self.start_time
         elif self._wall_start is None:
             # First ever visit — pick a random starting point
             offset = random.uniform(0, dur)
@@ -78,6 +82,7 @@ class YouTubeChannel(Channel):
         self._resolve_lock = threading.Lock()
         self._resolved_at: Optional[float] = None  # time.time() when resolved
         self.is_live = is_live
+        self._resolving = False           # True while a resolve thread is active
 
     def _ensure_duration(self) -> float:
         return self.duration
@@ -96,15 +101,19 @@ class YouTubeChannel(Channel):
     def resolve(self):
         """Resolve (or refresh) the stream URL in the calling thread.
         Safe to call from multiple threads — uses a lock to prevent races."""
-        with self._resolve_lock:
-            resolved = resolve_youtube_url(self.url)
-            if resolved:
-                self.resolved_url = resolved
-                self._resolved_at = time.time()
-                print("  [YT] resolved: {}".format(self.name[:50]), flush=True)
-            else:
-                print("  [YT] WARNING: could not resolve: {}".format(self.url),
-                      flush=True)
+        self._resolving = True
+        try:
+            with self._resolve_lock:
+                resolved = resolve_youtube_url(self.url)
+                if resolved:
+                    self.resolved_url = resolved
+                    self._resolved_at = time.time()
+                    print("  [YT] resolved: {}".format(self.name[:50]), flush=True)
+                else:
+                    print("  [YT] WARNING: could not resolve: {}".format(self.url),
+                          flush=True)
+        finally:
+            self._resolving = False
 
 
 class StreamChannel(Channel):

@@ -13,6 +13,46 @@ PLAYLIST_CACHE_TTL = 12 * 60 * 60  # 12 hours in seconds
 
 from tuner.constants import VIDEO_EXTENSIONS
 
+# ---------------------------------------------------------------------------
+# Subprocess registry — track all yt-dlp child processes so they can be
+# killed on shutdown before Python exits (daemon threads are killed but
+# already-forked Popen children survive as orphans and keep _MEI* dirs open).
+# ---------------------------------------------------------------------------
+_proc_registry: set = set()
+_proc_registry_lock = threading.Lock()
+
+
+def _run_yt_dlp(args: list, timeout: int) -> subprocess.CompletedProcess:
+    """Run yt-dlp via Popen, register the process, and return a CompletedProcess."""
+    proc = subprocess.Popen(
+        ["yt-dlp"] + args,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    with _proc_registry_lock:
+        _proc_registry.add(proc)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+    finally:
+        with _proc_registry_lock:
+            _proc_registry.discard(proc)
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+
+def kill_all_subprocesses():
+    """Kill every tracked yt-dlp subprocess. Call this on simulator shutdown."""
+    with _proc_registry_lock:
+        procs = list(_proc_registry)
+    for proc in procs:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    if procs:
+        print("  [yt-dlp] killed {} orphaned subprocess(es)".format(len(procs)))
+
 
 # Helper functions for finding videos and handling video metadata
 
@@ -114,16 +154,15 @@ def fetch_youtube_videos(
     # ── Fetch from yt-dlp ─────────────────────────────────────────────────
     print("  Fetching YouTube channel: {}".format(channel_url))
     try:
-        result = subprocess.run(
+        result = _run_yt_dlp(
             [
-                "yt-dlp",
                 "--flat-playlist",
                 "--dump-json",
-                "--playlist-end", "500",
+                "--playlist-end", "200",
                 "--no-warnings",
                 channel_url,
             ],
-            capture_output=True, text=True, timeout=60,
+            timeout=60,
         )
         videos = []
 
@@ -169,9 +208,9 @@ def fetch_youtube_live_info(url: str) -> dict:
     """
     print("  Fetching YouTube live stream info: {}".format(url))
     try:
-        result = subprocess.run(
-            ["yt-dlp", "--no-playlist", "--dump-json", "--no-warnings", url],
-            capture_output=True, text=True, timeout=30,
+        result = _run_yt_dlp(
+            ["--no-playlist", "--dump-json", "--no-warnings", url],
+            timeout=30,
         )
         data = json.loads(result.stdout.strip().splitlines()[0])
         return {"url": url, "title": data.get("title", url)}
@@ -193,15 +232,14 @@ def resolve_youtube_url(watch_url: str) -> Optional[dict]:
     URLs expire after ~6 hours so callers should refresh periodically.
     """
     try:
-        result = subprocess.run(
+        result = _run_yt_dlp(
             [
-                "yt-dlp",
                 "-f", "bestvideo+bestaudio/best",
                 "--get-url",
                 "--no-warnings",
                 watch_url,
             ],
-            capture_output=True, text=True, timeout=30,
+            timeout=30,
         )
         lines = [
             l.strip() for l in result.stdout.strip().splitlines()
@@ -237,9 +275,8 @@ def download_youtube_video(watch_url: str, title: str, cache_dir: str) -> Option
     print("  [YT cache] downloading: {}".format(safe_title[:60]))
     output_template = str(Path(cache_dir) / "{}.%(ext)s".format(safe_title))
     try:
-        subprocess.run(
+        result = _run_yt_dlp(
             [
-                "yt-dlp",
                 # Prefer mp4 video + m4a audio so ffmpeg merge is lossless
                 "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                 "--merge-output-format", "mp4",
@@ -248,9 +285,10 @@ def download_youtube_video(watch_url: str, title: str, cache_dir: str) -> Option
                 "-o", output_template,
                 watch_url,
             ],
-            capture_output=True, text=True, timeout=600,
-            check=True,
+            timeout=600,
         )
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, result.args)
     except subprocess.CalledProcessError as e:
         print("  [YT cache] ERROR downloading {}: {}".format(safe_title[:60], e))
         return None

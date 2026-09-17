@@ -47,6 +47,13 @@ def main():
     )
 
     parser.add_argument(
+        "--favorites", "-f",
+        default=False,
+        action='store_true',
+        help="Load only favorite channels, read from the automatically generated favorites channel config."
+    )
+
+    parser.add_argument(
         "--port", "-p",
         type=int,
         default=7777,
@@ -66,7 +73,7 @@ def main():
         print("Error: config file not found: {}".format(args.config))
         sys.exit(1)
 
-    TVSimulator(video_dir=args.directory, port=args.port, config_path=args.config).run()
+    TVSimulator(video_dir=args.directory, port=args.port, config_path=args.config, play_favorites=args.favorites).run()
 
 
 if __name__ == "__main__":
