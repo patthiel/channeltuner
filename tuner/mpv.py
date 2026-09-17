@@ -214,6 +214,8 @@ def _make_handler(tv_ref):
                 tv_ref._show_epg()
             elif cmd == "path":
                 tv_ref._current_video_path()
+            elif cmd == "random":
+                tv_ref._tune_random()
             elif cmd == "quit":
                 tv_ref._quit.set()  
             self.send_response(204)

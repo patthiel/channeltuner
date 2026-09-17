@@ -373,7 +373,9 @@ class TVSimulator:
         print("  Controls inside the MPV window (terminal can be minimised):")
         print("  UP    \u2192 next channel")
         print("  DOWN  \u2192 previous channel")
+        print("  =     \u2192 random Channel")
         print("  B     \u2192 last-watched channel (toggle)")
+        print("  \\    \u2192 Adds source to a favorites file")
         print("  Q/ESC \u2192 quit")
         print("=" * 60 + "\n")
 
