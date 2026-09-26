@@ -21,17 +21,21 @@ from tuner.mpv import MPVController, _make_handler
 # TV simulator
 # ---------------------------------------------------------------------------
 class TVSimulator:
-    def __init__(self, port, video_dir: Optional[str] = None, config_path: Optional[str] = None):
+    def __init__(self, port, video_dir: Optional[str] = None, config_path: Optional[str] = None, play_favorites: Optional[bool] = False):
         all_paths: List[Path] = []
         youtube_entries: list = []
 
         # ── Load from config file if provided ────────────────────────────
         stream_channels: List[StreamChannel] = []
 
+        if play_favorites:
+                config_path += "-favorites.json"
+
         if config_path:
             self.config_path = config_path
+            
             try:
-                cfg = tuner.sources.load_config(config_path)
+                cfg = tuner.sources.load_config(self.config_path)
             except Exception as e:
                 print("Error loading config: {}".format(e))
                 sys.exit(1)
@@ -190,11 +194,12 @@ class TVSimulator:
 
         self.user_defined_port = port
 
-        if not all_paths and not youtube_entries and not stream_channels:
+        if not all_paths and not youtube_entries and not stream_sources and not stream_channels:
             print("No video sources found. Provide a directory or a config file.")
             sys.exit(1)
 
         # ── Build channel list: local, YouTube, live streams, then shuffle ─
+
         random.shuffle(all_paths)
         channels: List[Channel] = []
         for path in all_paths:
@@ -205,7 +210,7 @@ class TVSimulator:
                 url      = entry["url"],
                 title    = entry["title"],
                 duration = entry["duration"],
-                is_live  = entry["is_live"]
+                is_live  = entry["is_live"],
             ))
         for sc in stream_channels:
             sc.index = len(channels)
@@ -272,8 +277,9 @@ class TVSimulator:
             "B      run curl -sf http://127.0.0.1:{}/back\n".format(p),
             "q      run curl -sf http://127.0.0.1:{}/quit\n".format(p),
             "ESC    run curl -sf http://127.0.0.1:{}/quit\n".format(p),
-            "\\      run curl -sf http://127.0.0.1:{}/path\n".format(p),
-            "SPACE  cycle pause ; run curl -sf http://127.0.0.1:{}/unpause\n".format(p)
+            "\\     run curl -sf http://127.0.0.1:{}/path\n".format(p),
+            "SPACE  cycle pause ; run curl -sf http://127.0.0.1:{}/unpause\n".format(p),
+            "=      run curl -sf http://127.0.0.1:{}/random\n".format(p)
         ]
         fd, path = tempfile.mkstemp(suffix=".conf", prefix="mpv_tv_input_")
         with os.fdopen(fd, "w") as f:
@@ -310,6 +316,9 @@ class TVSimulator:
         if self.previous_index is not None:
             self._tune(self.previous_index)
 
+    def _tune_random(self):
+        self._tune(int(len(self.channels) * random.random() * 100 ))
+
     def _show_epg(self):
         try:
             is_paused = self.mpv._send(["get_property", "pause"])
@@ -340,9 +349,9 @@ class TVSimulator:
         favorites_file = load_or_create_fav_file(favorites_file_path.format(self.config_path))
 
         if isinstance(ch, YouTubeChannel):
-            favorites_file["sources"].append({"type": "youtube", "path": str(ch.url)})
+            favorites_file["sources"].append({"type": "youtube", "url": str(ch.url), "start_time":  self.mpv.get_pos_from_mpv()})
         else:
-            favorites_file["sources"].append({"type": "file", "path": str(ch.path)})
+            favorites_file["sources"].append({"type": "file", "path": str(ch.path), "start_time": self.mpv.get_pos_from_mpv()})
 
         with open(favorites_file_path.format(self.config_path), "w") as f:
             json.dump(favorites_file, f)
@@ -364,7 +373,9 @@ class TVSimulator:
         print("  Controls inside the MPV window (terminal can be minimised):")
         print("  UP    \u2192 next channel")
         print("  DOWN  \u2192 previous channel")
+        print("  =     \u2192 random Channel")
         print("  B     \u2192 last-watched channel (toggle)")
+        print("  \\    \u2192 Adds source to a favorites file")
         print("  Q/ESC \u2192 quit")
         print("=" * 60 + "\n")
 
@@ -381,7 +392,7 @@ class TVSimulator:
             while not self._quit.is_set():
                 self._quit.wait(timeout=300)   # check every 5 minutes
                 for ch in self.channels:
-                    if isinstance(ch, YouTubeChannel) and not ch.is_live and not ch.is_url_fresh():
+                    if isinstance(ch, YouTubeChannel) and not ch.is_live and not ch.is_url_fresh() and not ch._resolving:
                         def _refresh(ch=ch):
                             with _refresh_sem:
                                 ch.resolve()
@@ -414,5 +425,6 @@ class TVSimulator:
         self._quit.wait()
 
         print("\n\n  Shutting down...")
+        tuner.sources.kill_all_subprocesses()
         self.mpv.stop()
         print("  Goodbye.\n")
