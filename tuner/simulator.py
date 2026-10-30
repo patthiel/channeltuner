@@ -122,6 +122,8 @@ class TVSimulator:
                 youtube_entries.append({"url": url, "title": name, "duration": 0.0, "is_live": True})
 
             # Streaming YouTube sources — fetch metadata concurrently
+            youtube_fetch_worker_count = cfg.get("youtube_fetch_worker_count", 4)
+
             if stream_sources:
                 stream_lock = threading.Lock()
                 def fetch_stream(source):
@@ -134,7 +136,7 @@ class TVSimulator:
                         with stream_lock:
                             youtube_entries.extend(entries)
                 with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=min(4, len(stream_sources))
+                    max_workers=min(youtube_fetch_worker_count, len(stream_sources))
                 ) as pool:
                     concurrent.futures.wait(
                         [pool.submit(fetch_stream, s) for s in stream_sources]
@@ -156,7 +158,7 @@ class TVSimulator:
                             for e in entries:
                                 all_cached_entries.append((e, cache_dir))
                 with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=min(4, len(cached_sources))
+                    max_workers=min(youtube_fetch_worker_count, len(cached_sources))
                 ) as pool:
                     concurrent.futures.wait(
                         [pool.submit(fetch_cached_meta, s) for s in cached_sources]
