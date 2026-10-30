@@ -133,8 +133,9 @@ class TVSimulator:
                             url, max_vids, is_live, ttl=playlist_cache_ttl)
                         with stream_lock:
                             youtube_entries.extend(entries)
+                youtube_fetch_worker_count = cfg.get("youtube_fetch_worker_count", 4)
                 with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=min(4, len(stream_sources))
+                    max_workers=min(youtube_fetch_worker_count, len(stream_sources))
                 ) as pool:
                     concurrent.futures.wait(
                         [pool.submit(fetch_stream, s) for s in stream_sources]
@@ -155,8 +156,9 @@ class TVSimulator:
                         with meta_lock:
                             for e in entries:
                                 all_cached_entries.append((e, cache_dir))
+                youtube_fetch_worker_count = cfg.get("youtube_fetch_worker_count", 4)
                 with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=min(4, len(cached_sources))
+                    max_workers=min(youtube_fetch_worker_count, len(cached_sources))
                 ) as pool:
                     concurrent.futures.wait(
                         [pool.submit(fetch_cached_meta, s) for s in cached_sources]

@@ -1,5 +1,6 @@
 {
   "youtube_cache_hours": 12,
+  "youtube_fetch_worker_count": 10,
   "sources": [
     {
       "type": "local",
