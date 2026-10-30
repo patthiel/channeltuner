@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List, Optional
 
 PLAYLIST_CACHE_TTL = 12 * 60 * 60  # 12 hours in seconds
+DIR_CACHE_TTL = 168 * 60 * 60      # 168 hours (7 days) in seconds
 
 from tuner.constants import VIDEO_EXTENSIONS
 
@@ -69,6 +70,54 @@ def find_videos(root: str) -> List[Path]:
     random.shuffle(videos)
     return videos
 
+def _dir_cache_path(config_path: str, cache_dir: str) -> Path:
+    key = hashlib.md5(os.path.abspath(config_path).encode()).hexdigest()
+    return Path(cache_dir) / "{}.json".format(key)
+
+
+def find_videos_cached(
+    root: str,
+    config_path: str,
+    cache_dir: str = ".cache/dir_cache",
+    ttl: float = DIR_CACHE_TTL,
+    refresh: bool = False,
+) -> List[Path]:
+    """
+    Like find_videos(), but remembers the scanned file list in a per-config
+    cache file so later runs skip the directory walk (slow on network mounts).
+    Each scanned root is stored with its own timestamp. refresh=True forces a
+    fresh scan and rewrites the entry. Returns the full list, shuffled.
+    """
+    cache_file = _dir_cache_path(config_path, cache_dir)
+    data = {"config": os.path.abspath(config_path), "roots": {}}
+    try:
+        loaded = json.loads(cache_file.read_text())
+        if isinstance(loaded.get("roots"), dict):
+            data = loaded
+    except Exception:
+        pass
+
+    entry = data["roots"].get(root)
+    if not refresh and entry and time.time() - entry.get("scanned_at", 0) < ttl:
+        files = [Path(f) for f in entry.get("files", [])]
+        print("  [dir cache] hit: {} ({} files)".format(root, len(files)))
+        random.shuffle(files)
+        return files
+
+    print("  [dir cache] scanning: {}".format(root))
+    files = find_videos(root)
+    data["roots"][root] = {
+        "scanned_at": time.time(),
+        "files": [str(f) for f in files],
+    }
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(data))
+    except Exception as e:
+        print("  WARNING: could not write dir cache: {}".format(e))
+    return files
+
+
 def process_file_sources(file_paths: list):
     files = []
     for f in file_paths:
@@ -100,7 +149,7 @@ def _playlist_cache_path(channel_url: str, cache_dir: str) -> Path:
     return Path(cache_dir) / "{}.json".format(key)
 
 
-def purge_playlist_cache(cache_dir: str = ".yt_cache", ttl: float = PLAYLIST_CACHE_TTL):
+def purge_playlist_cache(cache_dir: str = ".cache/yt_cache", ttl: float = PLAYLIST_CACHE_TTL):
     """Delete playlist cache files whose mtime is older than ttl seconds."""
     cache_path = Path(cache_dir)
     if not cache_path.exists():
@@ -122,7 +171,7 @@ def fetch_youtube_videos(
     channel_url: str,
     max_videos: int = 20,
     is_live: bool = False,
-    playlist_cache_dir: str = ".yt_cache",
+    playlist_cache_dir: str = ".cache/yt_cache",
     ttl: float = PLAYLIST_CACHE_TTL,
 ) -> list:
     """

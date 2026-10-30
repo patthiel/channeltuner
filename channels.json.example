@@ -1,5 +1,6 @@
 {
   "youtube_cache_hours": 12,
+  "dir_cache_hours": 168,
   "youtube_fetch_worker_count": 10,
   "sources": [
     {
@@ -20,7 +21,7 @@
       "type": "youtube",
       "url": "https://www.youtube.com/@nevertoosmall/videos",
       "max_videos": 5,
-      "cache_dir": ".yt_cache"
+      "cache_dir": ".cache/yt_cache"
     },
     {
       "type": "youtube",
