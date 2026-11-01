@@ -23,6 +23,7 @@ from tuner.mpv import MPVController, _make_handler
 class TVSimulator:
     def __init__(self, port, video_dir: Optional[str] = None, config_path: Optional[str] = None, play_favorites: Optional[bool] = False):
         all_paths: List[Path] = []
+        self._epg_schedule = False
         youtube_entries: list = []
 
         # ── Load from config file if provided ────────────────────────────
@@ -257,9 +258,23 @@ class TVSimulator:
             socket_path=self._socket_path,
             input_conf_path=self._input_conf,
             lua_script_path=self._lua_script,
+            epg_schedule=self._epg_schedule,
         )
+        self.mpv.guide_provider = self._guide_payload
 
     # ------------------------------------------------------------------
+    def _guide_payload(self, channel: Channel) -> str:
+        """Row for the EPG grid: the current channel, tab-separated."""
+        def clean(s):
+            return " ".join(str(s).split())
+        label, title = channel.epg_info()
+        rem = channel.time_remaining()
+        return "\t".join([
+            clean(label), clean(title),
+            str(int(rem)) if rem is not None else "-1",
+            str(int(channel.duration or 0)),
+        ])
+
     def _free_port(self) -> int:
         if self.user_defined_port:
             return self.user_defined_port

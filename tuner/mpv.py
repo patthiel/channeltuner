@@ -13,12 +13,14 @@ from typing import Optional
 # MPV controller
 # ---------------------------------------------------------------------------
 class MPVController:
-    def __init__(self, socket_path: str, input_conf_path: str, lua_script_path: str):
+    def __init__(self, socket_path: str, input_conf_path: str, lua_script_path: str, epg_schedule: bool = False):
         self.socket_path = socket_path
         self.input_conf_path = input_conf_path
         self.lua_script_path = lua_script_path
+        self.epg_schedule = epg_schedule
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
+        self.guide_provider = None   # callable(channel) -> guide payload string
 
     def start(self):
         if os.path.exists(self.socket_path):
@@ -32,6 +34,7 @@ class MPVController:
             "--input-ipc-server={}".format(self.socket_path),
             "--input-conf={}".format(self.input_conf_path),
             "--script={}".format(self.lua_script_path),
+            "--script-opts=epg_schedule={}".format("yes" if self.epg_schedule else "no"),
             "--osd-level=1",
             "--osd-font-size=42",
             "--osd-align-x=left",
@@ -164,8 +167,12 @@ class MPVController:
                     time.sleep(0.05)
                 self._send(["set_property", "pause", False])
 
-            self._send(["script-message", "cache-epg-info", ch_label, title])
-            self._send(["script-message", "show-epg", ch_label, title])
+            guide = self._guide(channel)
+            self._send(["script-message", "cache-epg-info", ch_label, title, guide])
+            self._send(["script-message", "show-epg", ch_label, title, guide])
+
+    def _guide(self, channel: Channel) -> str:
+        return self.guide_provider(channel) if self.guide_provider else ""
 
     def stop(self):
         if self._proc:
@@ -192,8 +199,9 @@ class MPVController:
     
     def display_epg(self, channel: Channel):
         ch_label, title = channel.epg_info()
-        self._send(["script-message", "cache-epg-info", ch_label, title])
-        self._send(["script-message", "show-epg", ch_label, title])
+        guide = self._guide(channel)
+        self._send(["script-message", "cache-epg-info", ch_label, title, guide])
+        self._send(["script-message", "show-epg", ch_label, title, guide])
 
 
 

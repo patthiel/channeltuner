@@ -47,6 +47,20 @@ class Channel:
         return (time.time() - self._wall_start) % dur
 
 
+    def time_remaining(self) -> Optional[float]:
+        """Seconds left in the current airing, without touching playback state.
+        None when unknown (live, or never tuned)."""
+        dur = self.duration
+        if not dur:
+            return None
+        if self.previous_position is not None and self.time_of_departure is not None:
+            pos = (self.previous_position + time.time() - self.time_of_departure) % dur
+        elif self._wall_start is not None:
+            pos = (time.time() - self._wall_start) % dur
+        else:
+            return None
+        return dur - pos
+
     def display_name(self) -> str:        
         return "CH {:02d}  {}".format(self.index + 1, self.name)
 
