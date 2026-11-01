@@ -2,8 +2,8 @@
 # Config files are json files, ignore them
 *.json
 
-# Ignore our youtube cache directory
-.yt_cache/
+# Ignore our cache directory (youtube playlists, directory scans)
+.cache/
 
 ### Python ###
 # Byte-compiled / optimized / DLL files

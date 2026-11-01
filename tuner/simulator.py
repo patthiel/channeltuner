@@ -21,7 +21,7 @@ from tuner.mpv import MPVController, _make_handler
 # TV simulator
 # ---------------------------------------------------------------------------
 class TVSimulator:
-    def __init__(self, port, video_dir: Optional[str] = None, config_path: Optional[str] = None, play_favorites: Optional[bool] = False):
+    def __init__(self, port, video_dir: Optional[str] = None, config_path: Optional[str] = None, play_favorites: Optional[bool] = False, no_dir_cache: bool = False):
         all_paths: List[Path] = []
         youtube_entries: list = []
 
@@ -43,7 +43,10 @@ class TVSimulator:
             # Global YouTube playlist cache TTL (default 12 hours)
             cache_hours = cfg.get("youtube_cache_hours", 12)
             playlist_cache_ttl = cache_hours * 3600
-            tuner.sources.purge_playlist_cache(".yt_cache", playlist_cache_ttl)
+            tuner.sources.purge_playlist_cache(".cache/yt_cache", playlist_cache_ttl)
+
+            # Directory scan cache TTL (default 168 hours)
+            dir_cache_ttl = cfg.get("dir_cache_hours", 168) * 3600
 
             # Split sources by type so we can handle them appropriately
             local_sources        = []
@@ -76,7 +79,9 @@ class TVSimulator:
                 path = source.get("path", "")
                 if os.path.isdir(path):
                     local_paths = []
-                    local_paths.extend(tuner.sources.find_videos(path))
+                    local_paths.extend(tuner.sources.find_videos_cached(
+                        path, self.config_path, ttl=dir_cache_ttl,
+                        refresh=no_dir_cache))
                     
                     max_videos = source.get("max_videos")
                     

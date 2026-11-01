@@ -60,6 +60,13 @@ def main():
         help="Port for MPV to listen for commands on"
     )
 
+    parser.add_argument(
+        "--no-dir-cache", "-z",
+        default=False,
+        action='store_true',
+        help="Ignore cached directory listings: rescan all local folders and rebuild the cache."
+    )
+
     args = parser.parse_args()
 
     if args.directory is None and args.config is None:
@@ -73,7 +80,7 @@ def main():
         print("Error: config file not found: {}".format(args.config))
         sys.exit(1)
 
-    TVSimulator(video_dir=args.directory, port=args.port, config_path=args.config, play_favorites=args.favorites).run()
+    TVSimulator(video_dir=args.directory, port=args.port, config_path=args.config, play_favorites=args.favorites, no_dir_cache=args.no_dir_cache).run()
 
 
 if __name__ == "__main__":
